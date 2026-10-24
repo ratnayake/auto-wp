@@ -1,0 +1,17 @@
+{
+  "name": "@auto-wp/vulndb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "gen:fixtures": "node scripts/gen-version-fixture.mjs"
+  },
+  "dependencies": {
+    "@auto-wp/contracts": "workspace:*"
+  }
+}
