@@ -1,0 +1,183 @@
+{
+  "description": "Agent signing protocol test vectors. See docs/agent-protocol.md. Regenerate: pnpm -F @auto-wp/contracts gen:vectors",
+  "serverTime": 1793000000,
+  "clockSkewSec": 300,
+  "keyId": "test-key-1",
+  "ed25519": {
+    "seedB64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "publicKeyB64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ="
+  },
+  "hmac": {
+    "keyB64": "YXV0by13cC10ZXN0LWhtYWMta2V5LTAxMjM0NTY3ODlhYmNkZWY="
+  },
+  "requests": [
+    {
+      "name": "probe",
+      "method": "POST",
+      "path": "/auto-wp-agent/agent.php",
+      "siteId": "site-agent",
+      "timestamp": 1793000000,
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "body": "{\"action\":\"probe\",\"params\":{}}",
+      "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+      "ed25519SignatureB64": "ivJa6OeZXrI13pvfDCzxVyvOSqsQ9ShwzmXwh6Reprh2/VKtIJ1hFcRHnMjrWuIbsmZPPo9XIc6ss57ZrQQWCQ==",
+      "hmacSha256SignatureB64": "Eel1K8ROIxKuPREA/rhgGNAGljzsry6MkkOVZvFMSSE="
+    },
+    {
+      "name": "db-dump",
+      "method": "POST",
+      "path": "/auto-wp-agent/agent.php",
+      "siteId": "site-agent",
+      "timestamp": 1792999990,
+      "nonce": "EBESExQVFhcYGRobHB0eHw",
+      "body": "{\"action\":\"db.dump\",\"params\":{\"dest\":\"auto-wp-backup/20261024T103012Z-7f3a9c/db.sql.gz\",\"excludeTables\":[]}}",
+      "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1792999990\nEBESExQVFhcYGRobHB0eHw\nsite-agent\n685d132b77bd5a36668f4b5cc405f9574be51afd10fc520eaf62c10c9b0c2a08",
+      "ed25519SignatureB64": "ANcZXj1E8e0t5sIeo1zr9sWggNpWN9pcraVYKjKD6nShVbfMhAdp9yYu5GI/KbAhg0aiTblY5zzfvZqVw15iDA==",
+      "hmacSha256SignatureB64": "fE8WA4BuTgD7mm/eFPLI2nGEIAvAU8fbeW0e95dGhis="
+    },
+    {
+      "name": "unicode-body",
+      "method": "POST",
+      "path": "/auto-wp-agent/agent.php",
+      "siteId": "site-agent",
+      "timestamp": 1793000005,
+      "nonce": "ICEiIyQlJicoKSorLC0uLw",
+      "body": "{\"action\":\"fs.stat\",\"params\":{\"path\":\"wp-content/uploads/ünïcødé.txt\"}}",
+      "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000005\nICEiIyQlJicoKSorLC0uLw\nsite-agent\na977dc0d1a8ff437f970fdea23fa8c20c7e2cd9e87d5623e537bf4ed927f0a3f",
+      "ed25519SignatureB64": "8pIWDwSqTtegQ+GplRUtndXyUBal3yQ2Da2cHlwm+Fh8yBd2bAycHr60S6FEaLS4OEaYZgh5TVtRrguLtmhqDA==",
+      "hmacSha256SignatureB64": "RSkDh1/KoyULJO9DnGO3rycNkkTE4JrfXFWEDisgUbU="
+    }
+  ],
+  "rejections": [
+    {
+      "name": "timestamp-too-old",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1792999699,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1792999699\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "BIiQhINT0/SeEyX4RHo1Jmuo0+GvBLsZTGTsq0IJALy/GaztDageoIRIDdKv2H7mO4rExCXKotPWDVGQ3GqLAw==",
+        "hmacSha256SignatureB64": "+svZpvM/ixQBBfZ4lpv4w812yoEWCMjUJnTyLqwc6vY="
+      },
+      "signWith": "valid",
+      "expect": "reject"
+    },
+    {
+      "name": "timestamp-too-new",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1793000301,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000301\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "/0WhLGQss2V3cvzQqYpbnlmK/RkD8OWIX/Ye8djNrGlLcq7p5yqw1TXyboDKk78UHrLN6r9Z5FU3qbPsorJDDA==",
+        "hmacSha256SignatureB64": "NpwXMDJeZ6dI87CRpAm6LfmW6tzzdnrLMYtGGNNeqEA="
+      },
+      "signWith": "valid",
+      "expect": "reject"
+    },
+    {
+      "name": "timestamp-edge-ok",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1792999700,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1792999700\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "JxtXKkftLDV54lY44IqHQuSryPkiJCf+B1tPmEKrM5srWPbraMIqeu9gQu9Kv05kkRaCfrdHxuOEGoW6C/q8AQ==",
+        "hmacSha256SignatureB64": "q1iylLHsMs+AqKoGu86lrMNvaqGTA1enxH6IJQmaWaA="
+      },
+      "signWith": "valid",
+      "expect": "accept"
+    },
+    {
+      "name": "tampered-body",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1793000000,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{\"x\":1}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n2457a54089d6170a3a046f8db4d1eeb6349d2571a480016008b1c5d2a1b58563",
+        "ed25519SignatureB64": "ivJa6OeZXrI13pvfDCzxVyvOSqsQ9ShwzmXwh6Reprh2/VKtIJ1hFcRHnMjrWuIbsmZPPo9XIc6ss57ZrQQWCQ==",
+        "hmacSha256SignatureB64": "Eel1K8ROIxKuPREA/rhgGNAGljzsry6MkkOVZvFMSSE="
+      },
+      "signWith": "original",
+      "expect": "reject"
+    },
+    {
+      "name": "wrong-site",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "other-site",
+        "timestamp": 1793000000,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nAAECAwQFBgcICQoLDA0ODw\nother-site\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "ivJa6OeZXrI13pvfDCzxVyvOSqsQ9ShwzmXwh6Reprh2/VKtIJ1hFcRHnMjrWuIbsmZPPo9XIc6ss57ZrQQWCQ==",
+        "hmacSha256SignatureB64": "Eel1K8ROIxKuPREA/rhgGNAGljzsry6MkkOVZvFMSSE="
+      },
+      "signWith": "original",
+      "expect": "reject"
+    },
+    {
+      "name": "replayed-nonce",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1793000000,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "ivJa6OeZXrI13pvfDCzxVyvOSqsQ9ShwzmXwh6Reprh2/VKtIJ1hFcRHnMjrWuIbsmZPPo9XIc6ss57ZrQQWCQ==",
+        "hmacSha256SignatureB64": "Eel1K8ROIxKuPREA/rhgGNAGljzsry6MkkOVZvFMSSE="
+      },
+      "signWith": "original",
+      "replay": true,
+      "expect": "reject-second"
+    },
+    {
+      "name": "bad-nonce-format",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1793000000,
+        "nonce": "short",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nshort\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "kPANEtmpfpnGbMjmEjkPtSLZTK8IO1jTQ3qrX/XqVu02gcnd5Z7R74m58B/GPTB8fnGiOWMMqVLTZgMr/iO/BA==",
+        "hmacSha256SignatureB64": "yqWjoEE1cPknbJX0K9aEgHw/wIH+PjodWw1mpWsPZvk="
+      },
+      "signWith": "valid",
+      "expect": "reject"
+    },
+    {
+      "name": "unknown-key-id",
+      "request": {
+        "method": "POST",
+        "path": "/auto-wp-agent/agent.php",
+        "siteId": "site-agent",
+        "timestamp": 1793000000,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
+        "body": "{\"action\":\"probe\",\"params\":{}}",
+        "canonical": "AUTOWP-SIG-V1\nPOST\n/auto-wp-agent/agent.php\n1793000000\nAAECAwQFBgcICQoLDA0ODw\nsite-agent\n7f78c5e5373c75f1da2ee90e39afde151533c514c06f8c98316f87e0785cdc0f",
+        "ed25519SignatureB64": "ivJa6OeZXrI13pvfDCzxVyvOSqsQ9ShwzmXwh6Reprh2/VKtIJ1hFcRHnMjrWuIbsmZPPo9XIc6ss57ZrQQWCQ==",
+        "hmacSha256SignatureB64": "Eel1K8ROIxKuPREA/rhgGNAGljzsry6MkkOVZvFMSSE="
+      },
+      "keyId": "nope",
+      "signWith": "original",
+      "expect": "reject"
+    }
+  ]
+}

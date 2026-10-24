@@ -1,0 +1,19 @@
+{
+  "name": "@auto-wp/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./fakes": "./src/fakes/index.ts",
+    "./test-vectors.json": "./test-vectors.json"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "gen:vectors": "node scripts/gen-test-vectors.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}

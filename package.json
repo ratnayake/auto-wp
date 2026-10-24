@@ -1,0 +1,23 @@
+{
+  "name": "auto-wp",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "e2e": "vitest run --project e2e"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.2",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
