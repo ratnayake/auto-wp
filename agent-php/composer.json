@@ -1,0 +1,27 @@
+{
+  "name": "auto-wp/agent-php",
+  "description": "Standalone signed PHP agent for auto-wp (built into dist/agent.php)",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=7.4 <8.5"
+  },
+  "require-dev": {
+    "paragonie/sodium_compat": "^1.21",
+    "phpunit/phpunit": "^9.6"
+  },
+  "autoload": {
+    "psr-4": { "AutoWp\\Agent\\": "src/" }
+  },
+  "autoload-dev": {
+    "psr-4": { "AutoWp\\Agent\\Tests\\": "tests/" }
+  },
+  "config": {
+    "platform": { "php": "7.4.33" },
+    "sort-packages": true
+  },
+  "scripts": {
+    "test": "phpunit",
+    "build": "php bin/build.php"
+  }
+}
