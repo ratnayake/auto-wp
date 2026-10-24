@@ -14,6 +14,7 @@ export interface BuildCommandOptions {
 /** Builds `[cd 'dir' && ][A='x' ]exec 'argv0' 'argv1'...`. Every element is quoted; callers never pass shell text. */
 export function buildCommand(argv: readonly string[], o: BuildCommandOptions = {}): string {
   if (argv.length === 0) throw new Error('exec: argv must not be empty');
+  if (argv[0]?.startsWith('-')) throw new Error('exec: argv[0] must not start with "-"');
   const parts: string[] = [];
   if (o.cwd !== undefined) parts.push(`cd ${shellQuote(o.cwd)} &&`);
   for (const [name, value] of Object.entries(o.env ?? {})) {

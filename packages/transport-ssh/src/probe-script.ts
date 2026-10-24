@@ -13,8 +13,11 @@ if [ -n "$wp" ]; then
   echo "wp_path=$wp"
   echo "wp_version=$("$wp" --version 2>/dev/null | head -n 1)"
 elif [ -f "$2/wp-cli.phar" ] && [ -n "$php_bin" ]; then
-  echo "wp_path=$2/wp-cli.phar"
-  echo "wp_version=$("$php_bin" "$2/wp-cli.phar" --version 2>/dev/null | head -n 1)"
+  v=$("$php_bin" "$2/wp-cli.phar" --version 2>/dev/null | head -n 1)
+  if [ -n "$v" ]; then
+    echo "wp_path=$2/wp-cli.phar"
+    echo "wp_version=$v"
+  fi
 fi
 for b in tar gzip mysqldump mysql find sha256sum; do
   p=$(command -v "$b" 2>/dev/null)
@@ -22,7 +25,7 @@ for b in tar gzip mysqldump mysql find sha256sum; do
 done
 echo "disk_free=$(df -Pk "$3" 2>/dev/null | awk 'NR==2 {print $4 * 1024}')"
 d=$(dirname "$3")
-[ -d "$d" ] && [ -w "$d" ] && echo "outside=$d"
+[ -d "$d" ] && [ -w "$d" ] && echo "outside_parent=$d"
 echo "docroot=$(cd "$3" 2>/dev/null && pwd -P)"
 exit 0
 `;
@@ -35,7 +38,8 @@ export interface ProbeScriptOutput {
   wpVersion?: string;
   binaries: Record<string, string>;
   diskFreeBytes?: number;
-  outsideDocrootDir?: string;
+  /** Writable parent of wpRoot; a dedicated subdirectory of it is used, never the parent itself. */
+  outsideParent?: string;
   docroot?: string;
 }
 
@@ -58,7 +62,7 @@ export function parseProbeOutput(out: string): ProbeScriptOutput {
     wpVersion,
     binaries,
     diskFreeBytes: Number.isFinite(disk) && disk >= 0 && get('disk_free') ? Math.floor(disk) : undefined,
-    outsideDocrootDir: get('outside'),
+    outsideParent: get('outside_parent'),
     docroot: get('docroot'),
   };
 }

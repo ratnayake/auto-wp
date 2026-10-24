@@ -17,7 +17,7 @@ const probeResult = {
   sodium: false,
   docroot: '/home/u/public_html',
   wpRoot: '/home/u/public_html',
-  outsideDocrootDir: '/home/u',
+  outsideDocrootDir: '/home/u/backups',
 };
 
 async function withAgent(
@@ -97,9 +97,11 @@ describe('exec', () => {
 
   it('kills the channel on timeout', async () => {
     const h = await makeHarness();
-    await withAgent(h, () => ({ hang: true }));
+    await withAgent(h, (cmd) => (cmd.includes('kill -KILL') ? {} : { hang: true }));
     await expect(h.conn.exec(['sleep', '99'], { timeoutMs: 20 })).rejects.toBeInstanceOf(ExecTimeoutError);
     expect(h.client.streams[0]?.closedByClient).toBe(true);
+    expect(h.client.streams[0]?.signals).toEqual(['KILL']);
+    expect(h.client.commands.at(-1)).toContain('kill -KILL 4242');
   });
 });
 
@@ -218,7 +220,9 @@ describe('call', () => {
     });
     const r = await h.conn.call('fs.sha256', { path: 'x' });
     expect(r).toEqual({ sha256: 'abc', bytes: 3 });
-    expect(seen[0]).toBe(`cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256'`);
+    expect(seen[0]).toBe(
+      `echo "AUTOWP_PID=$$" >&2; cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256'`,
+    );
     expect(JSON.parse(seen[1] ?? '')).toEqual({ path: 'x' });
     expect(h.sftp.files.get(AGENT)?.toString()).toBe('<?php // agent');
     expect(h.sftp.modes.get('/home/u/.auto-wp')).toBe(0o700);
@@ -328,7 +332,7 @@ describe('agent bootstrap', () => {
 
 describe('probe', () => {
   const script = (extra = '') =>
-    `php_bin=/usr/bin/php\nphp_version=8.3.1\nsodium=1\nbin_tar=/bin/tar\nbin_sha256sum=/usr/bin/sha256sum\nbin_bogus=/x\ndisk_free=12345\noutside=/home/u\ndocroot=/home/u/public_html\n${extra}`;
+    `php_bin=/usr/bin/php\nphp_version=8.3.1\nsodium=1\nbin_tar=/bin/tar\nbin_sha256sum=/usr/bin/sha256sum\nbin_bogus=/x\ndisk_free=12345\noutside_parent=/home/u\ndocroot=/home/u/public_html\n${extra}`;
 
   it('merges the shell script with the agent probe and forces shell:true', async () => {
     const h = await makeHarness();
@@ -412,5 +416,187 @@ describe('close', () => {
     await h.conn.close();
     expect(h.client.ended).toBe(true);
     expect(h.sftp.ended).toBe(true);
+  });
+});
+
+describe('outside-docroot jail root', () => {
+  const probeWith = async (h: Harness, agentDir: string | undefined, parent: string | null = '/home/u') => {
+    await withAgent(h, (cmd) =>
+      cmd.includes(`'--cli' 'probe'`)
+        ? ok({ ...probeResult, outsideDocrootDir: agentDir })
+        : { stdout: `php_bin=/usr/bin/php\nphp_version=8.3\n${parent ? `outside_parent=${parent}` : ''}\n` },
+    );
+    return h.conn.probe();
+  };
+
+  it('uses a dedicated 0700 <parent>/auto-wp-backup and never the parent itself', async () => {
+    const h = await makeHarness();
+    const caps = await probeWith(h, '/home/u');
+    expect(caps.outsideDocrootDir).toBe('/home/u/auto-wp-backup');
+    expect(h.sftp.modes.get('/home/u/auto-wp-backup')).toBe(0o700);
+    h.sftp.files.set('/home/u/.ssh_x', Buffer.from('k'));
+    await expect(h.conn.readFile('/home/u/.ssh_x')).rejects.toBeInstanceOf(PathJailError);
+    await expect(h.conn.readFile('/home/u/.ssh/authorized_keys')).rejects.toBeInstanceOf(PathJailError);
+    await expect(h.conn.writeFile('/home/u/.bashrc', 'x')).rejects.toBeInstanceOf(PathJailError);
+    await h.conn.writeFile('/home/u/auto-wp-backup/b.tgz', 'x');
+  });
+
+  it.each(['/', '/home', '/home/u', '/home/u/public_html/', '/home/u/.auto-wp'])(
+    'ignores unsafe agent dir %s',
+    async (dir) => {
+      const h = await makeHarness();
+      h.sftp.mkdirs('/home/u/.auto-wp');
+      const caps = await probeWith(h, dir, null);
+      expect(caps.outsideDocrootDir).toBeUndefined();
+    },
+  );
+
+  it('rejects a dir that contains .ssh', async () => {
+    const h = await makeHarness();
+    h.sftp.mkdirs('/home/u/shared/.ssh');
+    const caps = await probeWith(h, '/home/u/shared', null);
+    expect(caps.outsideDocrootDir).toBeUndefined();
+  });
+
+  it('does not use the root as parent when wpRoot is /www', async () => {
+    const h = await makeHarness({ config: { wpRoot: '/www' } });
+    h.sftp.mkdirs('/www');
+    const caps = await probeWith(h, undefined, '/');
+    expect(caps.outsideDocrootDir).toBe('/auto-wp-backup');
+    await expect(h.conn.readFile('/etc/passwd')).rejects.toBeInstanceOf(PathJailError);
+  });
+});
+
+describe('remove guard', () => {
+  it.each(['.', '/home/u/public_html/', '/home/u', '/home', '/', '/home/u/public_html/../public_html'])(
+    'refuses %s',
+    async (p) => {
+      const h = await makeHarness({ config: { wpRoot: '/home/u/public_html/' } });
+      await expect(h.conn.remove(p, { recursive: true })).rejects.toBeInstanceOf(PathJailError);
+      expect(h.sftp.dirs.has('/home/u/public_html')).toBe(true);
+    },
+  );
+
+  it('refuses the outside dir but allows its contents', async () => {
+    const h = await makeHarness();
+    await withAgent(h, (cmd) =>
+      cmd.includes(`'--cli' 'probe'`) ? ok(probeResult) : { stdout: 'php_bin=/usr/bin/php\n' },
+    );
+    await h.conn.probe();
+    h.sftp.mkdirs('/home/u/backups');
+    h.sftp.files.set('/home/u/backups/old', Buffer.from('x'));
+    await expect(h.conn.remove('/home/u/backups', { recursive: true })).rejects.toBeInstanceOf(PathJailError);
+    await h.conn.remove('/home/u/backups/old');
+    expect(h.sftp.files.has('/home/u/backups/old')).toBe(false);
+  });
+
+  it('rejects a relative wpRoot or toolDir', async () => {
+    await expect(makeHarness({ config: { wpRoot: 'www' } })).rejects.toThrow(/absolute/);
+    await expect(makeHarness({ config: { toolDir: 'tools' } })).rejects.toThrow(/toolDir/);
+  });
+});
+
+describe('rename and write safety', () => {
+  it('without posix-rename, restores the destination when the replacing rename fails', async () => {
+    const h = await makeHarness();
+    h.sftp.files.set('/home/u/public_html/dst', Buffer.from('LIVE'));
+    h.sftp.files.set('/home/u/public_html/src', Buffer.from('new'));
+    const orig = h.sftp.rename;
+    h.sftp.rename = (a, b, cb) => (a.endsWith('/src') ? cb(new Error('EBUSY')) : orig(a, b, cb));
+    await expect(h.conn.rename('src', 'dst')).rejects.toThrow('EBUSY');
+    expect(h.sftp.files.get('/home/u/public_html/dst')?.toString()).toBe('LIVE');
+    expect([...h.sftp.files.keys()].some((k) => k.includes('auto-wp-old'))).toBe(false);
+  });
+
+  it('does not touch the destination when the source is missing', async () => {
+    const h = await makeHarness();
+    h.sftp.files.set('/home/u/public_html/dst', Buffer.from('LIVE'));
+    await expect(h.conn.rename('missing', 'dst')).rejects.toBeDefined();
+    expect(h.sftp.files.get('/home/u/public_html/dst')?.toString()).toBe('LIVE');
+  });
+
+  it('replaces the destination via move-aside when it works', async () => {
+    const h = await makeHarness();
+    h.sftp.files.set('/home/u/public_html/dst', Buffer.from('old'));
+    h.sftp.files.set('/home/u/public_html/src', Buffer.from('new'));
+    await h.conn.rename('src', 'dst');
+    expect(h.sftp.files.get('/home/u/public_html/dst')?.toString()).toBe('new');
+    expect(h.sftp.files.size).toBe(1);
+  });
+
+  it('propagates real errors from posix-rename instead of falling back', async () => {
+    const h = await makeHarness();
+    h.sftp.files.set('/home/u/public_html/dst', Buffer.from('LIVE'));
+    h.sftp.ext_openssh_rename = ((_a: string, _b: string, cb: (e: Error) => void) =>
+      cb(Object.assign(new Error('Permission denied'), { code: 3 }))) as never;
+    await expect(h.conn.rename('src', 'dst')).rejects.toThrow('Permission denied');
+    expect(h.sftp.files.get('/home/u/public_html/dst')?.toString()).toBe('LIVE');
+  });
+
+  it('atomic writes keep the existing mode when none is given', async () => {
+    const h = await makeHarness();
+    h.sftp.files.set('/home/u/public_html/wp-config.php', Buffer.from('old'));
+    h.sftp.modes.set('/home/u/public_html/wp-config.php', 0o600);
+    await h.conn.writeFile('wp-config.php', 'new');
+    expect(h.sftp.modes.get('/home/u/public_html/wp-config.php')).toBe(0o600);
+  });
+
+  it('refuses non-atomic writes through a symlink', async () => {
+    const h = await makeHarness();
+    h.sftp.links.set('/home/u/public_html/dangling', '/home/u/nowhere');
+    await expect(h.conn.writeFile('dangling', 'x', { atomic: false })).rejects.toBeInstanceOf(PathJailError);
+  });
+});
+
+describe('job limits', () => {
+  const runningJob = (h: Harness, progress: () => unknown) =>
+    withAgent(h, (cmd) =>
+      cmd.includes(`'fs.count'`)
+        ? { stdout: JSON.stringify({ ok: true, job: { jobId: 'j' } }) }
+        : ok({ jobId: 'j', state: 'running', progress: progress() }),
+    );
+
+  it('fails a job whose progress does not change (stall detector)', async () => {
+    let t = 0;
+    const h = await makeHarness({
+      deps: { now: () => t, sleep: async () => void (t += 60_000), jobStallMs: 180_000 },
+    });
+    await runningJob(h, () => ({ done: 1 }));
+    await expect(h.conn.call('fs.count', { dir: 'x' })).rejects.toThrow(/no progress/);
+  });
+
+  it('applies a default overall ceiling and keeps going while progress advances', async () => {
+    let t = 0;
+    let n = 0;
+    const h = await makeHarness({
+      deps: { now: () => t, sleep: async () => void (t += 60_000), jobMaxMs: 600_000 },
+    });
+    await runningJob(h, () => ({ done: ++n }));
+    await expect(h.conn.call('fs.count', { dir: 'x' })).rejects.toThrow(/did not finish/);
+    expect(n).toBeGreaterThan(5);
+  });
+});
+
+describe('stale close events', () => {
+  it('a late close from an old client does not wipe the new connection', async () => {
+    const h = await makeHarness();
+    const { FakeClient, FakeSftp } = await import('./helpers.js');
+    const second = new FakeClient(new FakeSftp());
+    second.sftpServer.mkdirs('/home/u/public_html');
+    let n = 0;
+    const clients = [h.client, second];
+    const { SshSiteConnection } = await import('../src/index.js');
+    const conn = new SshSiteConnection('s', h.conn['config'], {
+      ...h.conn['deps'],
+      createClient: () => clients[n++] as never,
+    });
+    await conn.stat('.');
+    await conn.close();
+    await conn.stat('.');
+    expect(n).toBe(2);
+    h.client.emit('close');
+    await conn.stat('.');
+    expect(n).toBe(2);
+    expect(second.ended).toBe(false);
   });
 });

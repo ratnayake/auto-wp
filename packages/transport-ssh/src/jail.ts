@@ -24,6 +24,8 @@ export interface ResolvedPath {
   real: string;
 }
 
+export { clean as cleanPath };
+
 export class PathJail {
   private rootCache = new Map<string, string>();
 
@@ -58,6 +60,12 @@ export class PathJail {
       throw new PathJailError(`path outside allowed roots: ${input}`);
     }
     return abs;
+  }
+
+  /** True when `path` is, or contains, any jail root (lexical or real). Such paths must never be removed. */
+  async isRootOrAncestor(path: string): Promise<boolean> {
+    const p = clean(path);
+    return (await this.realRoots()).some((r) => isInside(r, p));
   }
 
   /** `followLast=false` leaves a final symlink unresolved (for lstat/remove/rename). */

@@ -32,6 +32,9 @@ describe('buildCommand', () => {
   it.each(['lower', '1BAD', 'A-B', 'A B', 'A=B', ''])('rejects env name %j', (name) => {
     expect(() => buildCommand(['x'], { env: { [name]: 'v' } })).toThrow(/invalid environment/);
   });
+  it('rejects an argv[0] that exec would parse as an option', () => {
+    expect(() => buildCommand(['-c', 'x'])).toThrow();
+  });
   it('rejects empty argv', () => {
     expect(() => buildCommand([])).toThrow();
   });

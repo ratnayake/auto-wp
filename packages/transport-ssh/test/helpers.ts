@@ -146,6 +146,10 @@ export class FakeStream extends EventEmitter {
     if (data !== undefined) this.stdin.push(Buffer.from(data));
     this.onEnd(Buffer.concat(this.stdin));
   }
+  signals: string[] = [];
+  signal(name: string) {
+    this.signals.push(name);
+  }
   close() {
     this.closedByClient = true;
     this.emit('close', null, 'KILL');
@@ -177,6 +181,8 @@ export class FakeClient extends EventEmitter {
   exec(command: string, cb: (e: Error | undefined, s: FakeStream) => void) {
     this.commands.push(command);
     const stream = new FakeStream(async (stdin) => {
+      if (command.startsWith('echo "AUTOWP_PID=$$" >&2; '))
+        stream.stderr.emit('data', Buffer.from('AUTOWP_PID=4242\n'));
       const r = await this.execHandler(command, stdin);
       if (r.hang) return;
       if (r.stdout) stream.emit('data', Buffer.from(r.stdout));

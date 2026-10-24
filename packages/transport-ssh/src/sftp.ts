@@ -1,9 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import type { FileStat } from '@auto-wp/contracts';
 import type { SFTPWrapper } from 'ssh2';
 
 const S_IFMT = 0o170000;
 const SFTP_NO_SUCH_FILE = 2;
+const SFTP_OP_UNSUPPORTED = 8;
 
 export interface RawAttrs {
   mode: number;
@@ -85,7 +87,11 @@ export class Sftp {
     return this.s.createReadStream(p, start > 0 ? { start } : {});
   }
 
-  /** Rename replacing the target: POSIX rename extension when offered, else unlink + rename. */
+  /**
+   * Rename replacing the target. Uses the POSIX-rename extension when the server offers it (atomic).
+   * Otherwise the existing destination is moved aside first and restored if the rename fails, so the
+   * destination is never lost.
+   */
   async rename(from: string, to: string): Promise<void> {
     const ext = (this.s as unknown as { ext_openssh_rename?: (a: string, b: string, cb: Cb<void>) => void })
       .ext_openssh_rename;
@@ -93,17 +99,33 @@ export class Sftp {
       try {
         await call<void>((cb) => ext.call(this.s, from, to, cb));
         return;
-      } catch {
-        // server lacks the extension; fall through
+      } catch (e) {
+        const err = e as { code?: unknown; message?: string };
+        if (!(err.code === SFTP_OP_UNSUPPORTED || /does not support/i.test(err.message ?? ''))) throw e;
       }
     }
+    const plain = () => call<void>((cb) => this.s.rename(from, to, cb as never));
     try {
-      await call<void>((cb) => this.s.rename(from, to, cb as never));
+      return await plain();
     } catch (e) {
-      if (!(await this.lstat(to))) throw e;
-      await this.unlink(to);
-      await call<void>((cb) => this.s.rename(from, to, cb as never));
+      const existing = await this.lstat(to);
+      if (!existing || toFileStat(to, existing).type === 'dir' || !(await this.lstat(from))) throw e;
+      const aside = `${to}.auto-wp-old-${randomBytes(6).toString('hex')}`;
+      await call<void>((cb) => this.s.rename(to, aside, cb as never));
+      try {
+        await plain();
+      } catch (e2) {
+        await call<void>((cb) => this.s.rename(aside, to, cb as never)).catch(() => undefined);
+        throw e2;
+      }
+      await this.unlink(aside).catch(() => undefined);
     }
+  }
+
+  onClose(fn: (err?: Error) => void): void {
+    const em = this.s as unknown as { on?: (ev: string, f: (e?: Error) => void) => void };
+    em.on?.('error', fn);
+    em.on?.('close', () => fn());
   }
 
   end(): void {
