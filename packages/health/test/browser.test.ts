@@ -25,7 +25,7 @@ const server = createServer((req, res) => {
   if (req.url?.startsWith('/styled')) {
     res.end(`<!doctype html><style>@keyframes m{from{margin-left:0}to{margin-left:200px}}
       .a{animation:m 1s infinite;width:50px;height:50px;background:red}</style>
-      <h1>Styled</h1><div class="a"></div><p class="ad">Ad ${Math.random()}</p>
+      <h1>Styled</h1><div class="a"></div><p class="ad" style="background:hsl(${Math.floor(Math.random() * 360)},80%,50%)">Ad</p>
       <p>Updated March 3, 2025 10:15 am</p>
       <script>console.error('boom'); fetch('/missing.json'); </script>`);
   } else {
