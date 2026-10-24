@@ -104,16 +104,27 @@ export class ApprovalError extends Error {}
 
 export class ApprovalLedger {
   private readonly entries = new Map<string, { result: ApprovalResult; expiresAt: number }>();
+  private readonly consumed = new Set<string>();
 
   constructor(
     private readonly clock: Clock = systemClock,
     private readonly ttlMs = 15 * 60_000,
   ) {}
 
-  /** Records an approved result; denied results are ignored. */
+  /**
+   * Records an approved result; denied results are ignored. The TTL runs from the approval time `r.at`
+   * (never later than now), an already-recorded approval is not refreshed, and a consumed plan cannot be re-recorded.
+   */
   record(r: ApprovalResult): void {
     if (!r.approved) return;
-    this.entries.set(r.planHash, { result: r, expiresAt: this.clock.now().getTime() + this.ttlMs });
+    if (this.consumed.has(r.planHash)) {
+      throw new ApprovalError(`approval for plan ${r.planHash.slice(0, 8)} was already consumed`);
+    }
+    if (this.entries.has(r.planHash)) return;
+    const now = this.clock.now().getTime();
+    const at = Date.parse(r.at);
+    const issued = Number.isFinite(at) && at <= now ? at : now;
+    this.entries.set(r.planHash, { result: r, expiresAt: issued + this.ttlMs });
   }
 
   /** Single use. Throws if there is no live approval for this exact plan hash. */
@@ -121,6 +132,7 @@ export class ApprovalLedger {
     const e = this.entries.get(hash);
     if (!e) throw new ApprovalError(`no approval recorded for plan ${hash.slice(0, 8)}`);
     this.entries.delete(hash);
+    this.consumed.add(hash);
     if (this.clock.now().getTime() >= e.expiresAt) {
       throw new ApprovalError(`approval for plan ${hash.slice(0, 8)} has expired`);
     }

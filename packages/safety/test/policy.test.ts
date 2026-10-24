@@ -33,6 +33,7 @@ describe('PolicyEngine', () => {
     const e = engine({ backupMaxAgeMinutes: 60 });
     expect(e.backupFreshEnough('2026-01-01T11:00:00Z', clock.now())).toBe(true);
     expect(e.backupFreshEnough('2026-01-01T10:59:59Z', clock.now())).toBe(false);
+    expect(e.backupFreshEnough('2026-01-01T12:00:01Z', clock.now())).toBe(false);
     expect(e.backupFreshEnough('garbage', clock.now())).toBe(false);
   });
 });

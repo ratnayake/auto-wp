@@ -70,4 +70,28 @@ describe('FileAuditLog', () => {
     });
     expect(await log.verifyChain()).toEqual({ ok: true });
   });
+
+  it('verifies entries whose data has hash/prevHash/seq fields', async () => {
+    const log = new FileAuditLog(await dir());
+    await log.append(entry('x', { hash: 'abc', prevHash: 'def', seq: 99 }));
+    await log.append(entry('y'));
+    expect(await log.verifyChain()).toEqual({ ok: true });
+    expect((await log.tail(2))[0]?.data).toEqual({ hash: 'abc', prevHash: 'def', seq: 99 });
+  });
+
+  it('redacts extended key names and URL credentials', async () => {
+    const log = new FileAuditLog(await dir());
+    await log.append(
+      entry('x', {
+        authorization: 'Bearer abc',
+        Cookie: 'c',
+        passphrase: 'p',
+        db_pass: 'q',
+        pwd: 'w',
+        dsn: 'mysql://u:hunter2@h/db',
+      }),
+    );
+    const raw = await readFile(log.path, 'utf8');
+    for (const s of ['Bearer abc', 'hunter2', '"c"', '"w"', '"q"']) expect(raw).not.toContain(s);
+  });
 });

@@ -1,4 +1,5 @@
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Clock } from '@auto-wp/contracts';
 
@@ -8,9 +9,12 @@ export interface LockInfo {
   expiresAt: number;
 }
 
+const GUARD_STALE_MS = 10_000;
+
 export class LockError extends Error {}
 
 const defaultPidAlive = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -36,23 +40,64 @@ export class FileLock {
     const path = this.pathFor(siteId);
     await mkdir(join(this.stateDir, 'locks'), { recursive: true });
     const info: LockInfo = { runId, pid: this.pid, expiresAt: this.clock.now().getTime() + ttlMs };
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await writeFile(path, JSON.stringify(info), { flag: 'wx' });
-        return;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    // Lock files are published with link(), so they appear atomically and fully written.
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify(info), { flag: 'wx' });
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (await this.tryLink(tmp, path)) return;
+        const existing = await this.read(path);
+        if (existing && !this.isStale(existing)) {
+          throw new LockError(`site ${siteId} is locked by run ${existing.runId} (pid ${existing.pid})`);
+        }
+        if (await this.steal(path, tmp)) return;
       }
-      const existing = await this.read(path);
-      if (existing && !this.isStale(existing)) {
-        throw new LockError(`site ${siteId} is locked by run ${existing.runId} (pid ${existing.pid})`);
-      }
-      // stale or unreadable: steal
-      await unlink(path).catch((e: NodeJS.ErrnoException) => {
-        if (e.code !== 'ENOENT') throw e;
-      });
+      throw new LockError(`could not acquire lock for site ${siteId}`);
+    } finally {
+      await unlink(tmp).catch(() => undefined);
     }
-    throw new LockError(`could not acquire lock for site ${siteId}`);
+  }
+
+  private async tryLink(tmp: string, path: string): Promise<boolean> {
+    try {
+      await link(tmp, path);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw err;
+    }
+  }
+
+  /**
+   * Removes a stale lock. Serialised through a short-lived guard file and re-checked under the guard, so a
+   * slow stealer can never delete a lock another process has just taken.
+   */
+  private async steal(path: string, tmp: string): Promise<boolean> {
+    const guard = `${path}.steal`;
+    try {
+      await writeFile(guard, String(this.pid), { flag: 'wx' });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const age = await stat(guard).then(
+        (s) => Date.now() - s.mtimeMs,
+        () => 0,
+      );
+      if (age > GUARD_STALE_MS) await unlink(guard).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 20));
+      return false;
+    }
+    try {
+      const existing = await this.read(path);
+      if (!existing || this.isStale(existing)) {
+        await unlink(path).catch((e: NodeJS.ErrnoException) => {
+          if (e.code !== 'ENOENT') throw e;
+        });
+        return await this.tryLink(tmp, path);
+      }
+      return false;
+    } finally {
+      await unlink(guard).catch(() => undefined);
+    }
   }
 
   async release(siteId: string, runId: string): Promise<void> {

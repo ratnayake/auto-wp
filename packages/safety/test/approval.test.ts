@@ -4,6 +4,7 @@ import { FakeClock, MemoryLogger } from '@auto-wp/contracts/fakes';
 import { describe, expect, it } from 'vitest';
 import {
   ApprovalLedger,
+  canonicalJson,
   ElicitationApprovalGate,
   EnvApprovalGate,
   planHash,
@@ -22,6 +23,8 @@ describe('planHash', () => {
     expect(planHash({ a: 1, b: { c: [1, { y: 1, x: 2 }], d: 2 } })).toBe(
       planHash({ b: { d: 2, c: [1, { x: 2, y: 1 }] }, a: 1 }),
     );
+    expect(canonicalJson({ b: 1, 10: 1, 2: 1 })).toBe('{"10":1,"2":1,"b":1}');
+    expect(() => planHash(undefined)).not.toThrow();
     expect(planHash({ a: 1 })).not.toBe(planHash({ a: 2 }));
     expect(planHash({ a: 1 })).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -104,5 +107,23 @@ describe('ApprovalLedger', () => {
     const l = new ApprovalLedger(new FakeClock());
     l.record({ ...ok('h1'), approved: false });
     expect(() => l.consume('h1')).toThrow();
+  });
+  it('cannot re-record a consumed approval', () => {
+    const l = new ApprovalLedger(new FakeClock());
+    l.record(ok('h1'));
+    l.consume('h1');
+    expect(() => l.record(ok('h1'))).toThrow(/already consumed/);
+    expect(() => l.consume('h1')).toThrow();
+  });
+  it('counts the ttl from the approval time and does not refresh on re-record', () => {
+    const c = new FakeClock('2026-01-01T01:00:00Z');
+    const l = new ApprovalLedger(c);
+    l.record({ ...ok('old'), at: '2026-01-01T00:00:00Z' });
+    expect(() => l.consume('old')).toThrow(/expired/);
+    l.record({ ...ok('h'), at: c.now().toISOString() });
+    c.advance(10 * 60_000);
+    l.record({ ...ok('h'), at: c.now().toISOString() });
+    c.advance(5 * 60_000);
+    expect(() => l.consume('h')).toThrow(/expired/);
   });
 });

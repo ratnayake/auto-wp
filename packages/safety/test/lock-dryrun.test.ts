@@ -1,4 +1,4 @@
-import { mkdtemp, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeClock } from '@auto-wp/contracts/fakes';
@@ -62,5 +62,34 @@ describe('DryRunRecorder', () => {
     expect(ran).toBe(0);
     expect(await rec.wrap(false, 'do b', async () => ++ran)).toBe(1);
     expect(rec.operations).toEqual(['do a']);
+  });
+});
+
+describe('FileLock races', () => {
+  it('lets exactly one of many concurrent stealers win over a stale lock', async () => {
+    const d = await dir();
+    const clock = new FakeClock();
+    await new FileLock(d, clock, () => true).acquire('s1', 'old', 1000);
+    clock.advance(5000);
+    const lock = new FileLock(d, clock, () => true);
+    const r = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => lock.acquire('s1', `r${i}`)));
+    expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+  });
+
+  it('never exposes a partial lock file, and steals corrupt ones', async () => {
+    const d = await dir();
+    const lock = new FileLock(d, new FakeClock(), () => true);
+    await writeFile(join(d, 'locks', 's1.lock'), '').catch(async () => {
+      await mkdir(join(d, 'locks'), { recursive: true });
+      await writeFile(join(d, 'locks', 's1.lock'), '');
+    });
+    await lock.acquire('s1', 'r1');
+    await expect(lock.acquire('s1', 'r2')).rejects.toThrow(/locked/);
+  });
+
+  it('treats non-positive pids as dead with the default liveness check', async () => {
+    const d = await dir();
+    await new FileLock(d, new FakeClock(), () => true, 0).acquire('s1', 'r1');
+    await new FileLock(d, new FakeClock()).acquire('s1', 'r2');
   });
 });

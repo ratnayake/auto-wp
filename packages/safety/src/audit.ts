@@ -4,10 +4,12 @@ import type { AuditEntry, AuditLog } from '@auto-wp/contracts';
 import { canonicalJson, sha256Hex } from './canonical.js';
 
 const GENESIS = '0'.repeat(64);
-const SENSITIVE_KEY = /password|secret|token|key/i;
+const SENSITIVE_KEY = /pass|pwd|secret|token|key|auth|cookie|credential|nonce/i;
+const URL_CREDENTIALS = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]*@/gi;
 
 export function redact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redact);
+  if (typeof value === 'string') return value.replace(URL_CREDENTIALS, '$1[REDACTED]@');
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([k, v]) => [k, SENSITIVE_KEY.test(k) ? '[REDACTED]' : redact(v)]),
@@ -16,13 +18,16 @@ export function redact(value: unknown): unknown {
   return value;
 }
 
-interface ChainedLine extends AuditEntry {
+/** The entry is nested so payload fields can never collide with the chain envelope. */
+interface ChainedLine {
   seq: number;
   prevHash: string;
   hash: string;
+  entry: AuditEntry;
 }
 
-const computeHash = (prevHash: string, body: object): string => sha256Hex(prevHash + canonicalJson(body));
+const computeHash = (prevHash: string, seq: number, entry: AuditEntry): string =>
+  sha256Hex(prevHash + canonicalJson({ entry, seq }));
 
 export class FileAuditLog implements AuditLog {
   readonly path: string;
@@ -46,8 +51,8 @@ export class FileAuditLog implements AuditLog {
     if (e.data !== undefined) entry.data = redact(e.data);
     const seq = this.state.seq + 1;
     const prevHash = this.state.hash;
-    const hash = computeHash(prevHash, { ...entry, seq });
-    const line = `${JSON.stringify({ ...entry, seq, prevHash, hash })}\n`;
+    const hash = computeHash(prevHash, seq, entry);
+    const line = `${JSON.stringify({ seq, prevHash, hash, entry })}\n`;
     let fh: FileHandle | undefined;
     try {
       fh = await open(this.path, 'a');
@@ -80,10 +85,7 @@ export class FileAuditLog implements AuditLog {
     await this.queue;
     if (limit <= 0) return [];
     const lines = (await this.readLines()).slice(-limit);
-    return lines.map((l) => {
-      const { seq: _s, prevHash: _p, hash: _h, ...entry } = JSON.parse(l) as ChainedLine;
-      return entry;
-    });
+    return lines.map((l) => (JSON.parse(l) as ChainedLine).entry);
   }
 
   async verifyChain(): Promise<{ ok: boolean; brokenAtSeq?: number }> {
@@ -98,8 +100,8 @@ export class FileAuditLog implements AuditLog {
       } catch {
         return { ok: false, brokenAtSeq: expectedSeq };
       }
-      const { prevHash, hash, ...body } = parsed;
-      if (parsed.seq !== expectedSeq || prevHash !== prev || computeHash(prevHash, body) !== hash) {
+      const { prevHash, hash, entry, seq } = parsed;
+      if (seq !== expectedSeq || prevHash !== prev || !entry || computeHash(prevHash, seq, entry) !== hash) {
         return { ok: false, brokenAtSeq: expectedSeq };
       }
       prev = hash;

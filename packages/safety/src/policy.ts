@@ -29,7 +29,7 @@ export class PolicyEngine {
 
   backupFreshEnough(verifiedAt: Date | string, now: Date): boolean {
     const age = now.getTime() - new Date(verifiedAt).getTime();
-    return Number.isFinite(age) && age <= this.policy.backupMaxAgeMinutes * 60_000;
+    return Number.isFinite(age) && age >= 0 && age <= this.policy.backupMaxAgeMinutes * 60_000;
   }
 
   /** Convenience for callers holding an UpdateItem. */
