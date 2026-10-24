@@ -41,7 +41,13 @@ export async function capturePage(
   browser: Browser,
   url: string,
   vp: ViewportName,
-  o: { maskSelectors: string[]; bypassCookie?: string; outPath: string; captureText: boolean },
+  o: {
+    maskSelectors: string[];
+    bypassCookie?: string;
+    cookieOrigin?: string;
+    outPath: string;
+    captureText: boolean;
+  },
 ): Promise<BrowserPageResult> {
   const context = await browser.newContext({
     viewport: VIEWPORTS[vp],
@@ -51,7 +57,7 @@ export async function capturePage(
   });
   try {
     const target = new URL(url);
-    if (o.bypassCookie) {
+    if (o.bypassCookie && o.cookieOrigin === target.origin) {
       await context.addCookies([
         { name: 'autowp_bypass', value: o.bypassCookie, domain: target.hostname, path: '/' },
       ]);
@@ -102,6 +108,6 @@ export async function capturePage(
       text,
     };
   } finally {
-    await context.close();
+    await context.close().catch(() => {});
   }
 }

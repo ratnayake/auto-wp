@@ -33,6 +33,10 @@ export interface HealthCheckerDeps {
   visualChangesFail?: boolean;
 }
 
+export interface ProbeOptions {
+  bypassToken?: string;
+}
+
 const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '_');
 
 export class DefaultHealthChecker implements HealthChecker {
@@ -46,29 +50,46 @@ export class DefaultHealthChecker implements HealthChecker {
     return [...new Set(['/', ...site.healthUrls].map((p) => resolveUrl(site.url, p)))];
   }
 
-  private async cookie(): Promise<string | undefined> {
-    return (await this.d.bypassCookie?.()) || undefined;
+  /** Precedence: explicit option, then legacy `site.bypassCookie`, then the injected provider. */
+  private async cookie(site: SiteConfig, o?: ProbeOptions): Promise<string | undefined> {
+    const legacy = (site as SiteConfig & { bypassCookie?: string }).bypassCookie;
+    return o?.bypassToken || legacy || (await this.d.bypassCookie?.()) || undefined;
   }
 
-  async snapshot(site: SiteConfig, conn: SiteConnection, label: string): Promise<HealthSnapshot> {
+  async snapshot(
+    site: SiteConfig,
+    conn: SiteConnection,
+    label: string,
+    o?: ProbeOptions,
+  ): Promise<HealthSnapshot> {
     const now = this.d.clock.now();
     const ts = now.getTime();
     const snapshotId = `${safe(label)}-${ts}`;
     const dir = join(this.d.artifactsDir, snapshotId);
-    const cookie = await this.cookie();
+    const cookie = await this.cookie(site, o);
+    const origin = new URL(site.url).origin;
     const pages: PageProbe[] = [];
     for (const url of this.urls(site)) {
-      pages.push(await httpProbe(url, ts, { fetch: this.fetchFn, cookie }));
+      pages.push(await httpProbe(url, ts, { fetch: this.fetchFn, cookie, cookieOrigin: origin }));
     }
-    if (this.d.browser) await this.browserPass(site, pages, dir, cookie);
+    if (this.d.browser) await this.browserPass(site, pages, dir, cookie, origin);
     else this.d.logger.warn({ siteId: site.id }, 'no browser available; health snapshot is HTTP-only');
 
     const logOffsets: Record<string, number> = {};
-    for (const p of site.logFiles) logOffsets[p] = await logSize(conn, p, this.d.logger);
+    for (const p of site.logFiles) {
+      const size = await logSize(conn, p, this.d.logger);
+      if (size !== undefined) logOffsets[p] = size;
+    }
     return { snapshotId, siteId: site.id, label, takenAt: now.toISOString(), pages, logOffsets };
   }
 
-  private async browserPass(site: SiteConfig, pages: PageProbe[], dir: string, cookie?: string) {
+  private async browserPass(
+    site: SiteConfig,
+    pages: PageProbe[],
+    dir: string,
+    cookie?: string,
+    origin?: string,
+  ) {
     const factory = this.d.browser;
     if (!factory) return;
     let browser: Awaited<ReturnType<BrowserFactory>>;
@@ -89,6 +110,7 @@ export class DefaultHealthChecker implements HealthChecker {
             const r = await capturePage(browser, page.url, vp, {
               maskSelectors: site.maskSelectors,
               bypassCookie: cookie,
+              cookieOrigin: origin,
               outPath: join(dir, `${i}-${vp}.png`),
               captureText: vp === 'desktop',
             });
@@ -112,17 +134,24 @@ export class DefaultHealthChecker implements HealthChecker {
     }
   }
 
-  async quick(site: SiteConfig, conn: SiteConnection, baseline: HealthSnapshot): Promise<ComparisonResult> {
+  async quick(
+    site: SiteConfig,
+    conn: SiteConnection,
+    baseline: HealthSnapshot,
+    o?: ProbeOptions,
+  ): Promise<ComparisonResult> {
     const ts = this.d.clock.now().getTime();
-    const cookie = await this.cookie();
+    const cookie = await this.cookie(site, o);
+    const origin = new URL(site.url).origin;
     const pages = [];
     let functional = false;
     for (const [i, b] of baseline.pages.entries()) {
-      const after = await httpProbe(b.url, ts, { fetch: this.fetchFn, cookie });
+      const after = await httpProbe(b.url, ts, { fetch: this.fetchFn, cookie, cookieOrigin: origin });
       const r = await comparePage(b, after, undefined, {
         artifactsDir: this.d.artifactsDir,
         diffDir: this.d.artifactsDir,
         index: i,
+        gate: true,
       });
       pages.push(r.cmp);
       functional ||= r.functional;

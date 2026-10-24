@@ -20,6 +20,7 @@ export interface CompareOptions {
   artifactsDir: string;
 }
 
+const isDown = (s: number) => s === 0 || s >= 500;
 const isBad = (s: number) => s === 0 || s >= 400;
 
 export function truncateLines(s: string, max = MAX_DIFF_LINES): string {
@@ -48,7 +49,7 @@ export async function comparePage(
   before: PageProbe | undefined,
   after: PageProbe | undefined,
   t: Thresholds | undefined,
-  o: { artifactsDir: string; diffDir: string; index: number },
+  o: { artifactsDir: string; diffDir: string; index: number; gate?: boolean },
 ): Promise<PageResult> {
   const url = (after ?? before)?.url ?? '';
   const problems: string[] = [];
@@ -89,12 +90,29 @@ export async function comparePage(
     problems.push('WordPress/PHP critical error detected in page body');
     functional = true;
   }
+  if (o.gate && before) {
+    // Post-change gate: a still-failing site is never ok, even if the baseline was already failing.
+    if (isDown(after.status) && isDown(before.status)) {
+      problems.push(
+        `site was already failing before the update (HTTP ${before.status || 'n/a'}, now ${after.status || 'no response'})`,
+      );
+      functional = true;
+    }
+    if (after.criticalError && before.criticalError) {
+      problems.push('site was already failing before the update (critical error persists)');
+      functional = true;
+    }
+  }
   if (!before) return { cmp, functional };
 
   if (t) {
     for (const vp of VPS) {
       const b = before.screenshotPaths?.[vp];
       const a = after.screenshotPaths?.[vp];
+      if (!!b !== !!a) {
+        problems.push(`${vp} screenshot missing in the ${a ? 'before' : 'after'} snapshot`);
+        continue;
+      }
       if (!b || !a) continue;
       await mkdir(o.diffDir, { recursive: true });
       const out = join(o.diffDir, `diff-${o.index}-${vp}.png`);

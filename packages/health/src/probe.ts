@@ -8,6 +8,8 @@ const TIMEOUT_MS = 30_000;
 export interface HttpProbeDeps {
   fetch: typeof fetch;
   cookie?: string;
+  /** Origin the cookie may be sent to; it is dropped on any hop to another origin. */
+  cookieOrigin?: string;
 }
 
 export function hasCriticalError(body: string): boolean {
@@ -34,7 +36,8 @@ export async function httpProbe(url: string, ts: number, d: HttpProbeDeps): Prom
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const headers: Record<string, string> = { 'Cache-Control': 'no-cache', Pragma: 'no-cache' };
-      if (d.cookie) headers.Cookie = `autowp_bypass=${d.cookie}`;
+      if (d.cookie && d.cookieOrigin && target.origin === d.cookieOrigin)
+        headers.Cookie = `autowp_bypass=${d.cookie}`;
       const res = await d.fetch(target, {
         redirect: 'manual',
         headers,
@@ -43,8 +46,12 @@ export async function httpProbe(url: string, ts: number, d: HttpProbeDeps): Prom
       if (hop === 0) probe.ttfbMs = Math.round(performance.now() - start);
       probe.status = res.status;
       const loc = res.headers.get('location');
-      if (res.status >= 300 && res.status < 400 && loc && hop < MAX_REDIRECTS) {
+      if (res.status >= 300 && res.status < 400 && loc) {
         await res.body?.cancel();
+        if (hop === MAX_REDIRECTS) {
+          probe.status = 0; // redirect loop / over-long chain counts as unreachable
+          break;
+        }
         target = new URL(loc, target);
         continue;
       }

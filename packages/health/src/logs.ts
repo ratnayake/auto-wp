@@ -21,14 +21,15 @@ export function extractFatalLines(data: string, cap = MAX_LOG_LINES): string[] {
   return [...seen];
 }
 
-/** Current size of a remote log, or 0 if missing/unreadable. */
-export async function logSize(conn: SiteConnection, path: string, log: Logger): Promise<number> {
+/** Current size of a remote log; 0 if confirmed absent; undefined if unreadable (offset unknown). */
+export async function logSize(conn: SiteConnection, path: string, log: Logger): Promise<number | undefined> {
   try {
     const r = await conn.call('logs.tail', { path, fromOffset: 0, maxBytes: 1 });
     return r.size;
   } catch (err) {
-    log.debug({ path, err: String(err) }, 'log not readable; offset 0');
-    return 0;
+    if (/ENOENT|not.?found|no such file|does not exist/i.test(String(err))) return 0;
+    log.warn({ path, err: String(err) }, 'log size unreadable; baseline offset unknown');
+    return undefined;
   }
 }
 
@@ -68,7 +69,12 @@ export async function scanNewFatals(
 ): Promise<string[]> {
   const out = new Set<string>();
   for (const p of paths) {
-    const data = await readNewLog(conn, p, offsets[p] ?? 0, log);
+    const known = offsets[p];
+    if (known === undefined) {
+      log.warn({ path: p }, 'log baseline unknown; not scanning pre-existing content');
+      continue;
+    }
+    const data = await readNewLog(conn, p, known, log);
     for (const l of extractFatalLines(data)) out.add(`${p}: ${l}`);
   }
   return [...out].slice(0, MAX_LOG_LINES);

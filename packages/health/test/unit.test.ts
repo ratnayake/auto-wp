@@ -56,7 +56,7 @@ describe('http probes', () => {
     expect(by('/broken')).toMatchObject({ status: 500, criticalError: true });
     expect(by('/redirect')?.status).toBe(200);
     expect(by('/phpfatal')?.criticalError).toBe(true);
-    expect(by('/loop')?.status).toBe(302);
+    expect(by('/loop')?.status).toBe(0);
     expect(s.snapshotId).toMatch(/^before-\d+$/);
     expect(logger.lines.some((l) => l.level === 'warn')).toBe(true);
     const h = fx.hits.find((x) => x.url.startsWith('/?autowp_nocache='));
@@ -228,5 +228,87 @@ describe('compare thresholds', () => {
     // pre-existing 500 is not a regression
     const same = await k.hc.compare(snap([probe({ status: 500 })]), snap([probe({ status: 500 })]), T);
     expect(same.ok).toBe(true);
+  });
+});
+
+describe('review fixes', () => {
+  it('does not send the bypass cookie to other origins or across cross-origin redirects', async () => {
+    const other = await startFixture();
+    try {
+      const { hc, conn } = await checker();
+      other.hits.length = 0;
+      fx.hits.length = 0;
+      const st = site(fx.url, { healthUrls: [`${other.url}/`], logFiles: [] });
+      await hc.snapshot(st, conn, 'x', { bypassToken: 'sekret' });
+      expect(other.hits.every((h) => h.cookie === undefined)).toBe(true);
+      expect(fx.hits.some((h) => h.cookie === 'autowp_bypass=sekret')).toBe(true);
+    } finally {
+      await other.close();
+    }
+  });
+
+  it('accepts legacy site.bypassCookie; option takes precedence', async () => {
+    const { hc, conn } = await checker();
+    fx.hits.length = 0;
+    await hc.snapshot({ ...site(fx.url, { logFiles: [] }), bypassCookie: 'legacy' } as never, conn, 'x');
+    expect(fx.hits[0]?.cookie).toBe('autowp_bypass=legacy');
+    fx.hits.length = 0;
+    await hc.snapshot({ ...site(fx.url, { logFiles: [] }), bypassCookie: 'legacy' } as never, conn, 'x', {
+      bypassToken: 'opt',
+    });
+    expect(fx.hits[0]?.cookie).toBe('autowp_bypass=opt');
+  });
+
+  it('redirect loop is a failure in quick()', async () => {
+    const { hc, conn } = await checker();
+    const r = await hc.quick(site(fx.url, { logFiles: [] }), conn, snap([probe({ url: `${fx.url}/loop` })]));
+    expect(r.ok).toBe(false);
+    expect(r.pages[0]?.statusAfter).toBe(0);
+  });
+
+  it('quick flags a still-failing site even when the baseline was failing', async () => {
+    const { hc, conn } = await checker();
+    const r = await hc.quick(
+      site(fx.url, { logFiles: [] }),
+      conn,
+      snap([probe({ url: `${fx.url}/broken`, status: 503, criticalError: true })]),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.pages[0]?.problems.join()).toMatch(/already failing/);
+  });
+
+  it('quick tolerates a pre-existing 404', async () => {
+    const { hc, conn } = await checker();
+    const r = await hc.quick(
+      site(fx.url, { logFiles: [] }),
+      conn,
+      snap([probe({ url: `${fx.url}/nope`, status: 404 })]),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('unreadable log at snapshot time yields unknown offset and no historical fatals later', async () => {
+    const { hc, conn } = await checker();
+    let fail = true;
+    conn.onCall('logs.tail', () => {
+      if (fail) throw new Error('transport blip');
+      return { data: 'PHP Fatal error: old\n', nextOffset: 21, size: 21, rotated: false };
+    });
+    const st = site(fx.url, { logFiles: ['wp-content/debug.log'] });
+    const base = await hc.snapshot(st, conn, 'b');
+    expect(base.logOffsets).toEqual({});
+    fail = false;
+    const r = await hc.quick(st, conn, base);
+    expect(r.newLogErrors).toEqual([]);
+  });
+
+  it('compare flags a screenshot missing on one side', async () => {
+    const { hc } = await checker();
+    const r = await hc.compare(
+      snap([probe({ screenshotPaths: { desktop: '/nonexistent.png' } })]),
+      snap([probe()]),
+      { pixelDiffPct: 2, slowdownFactor: 1.5, slowdownMinMs: 300 },
+    );
+    expect(r.pages[0]?.problems.join()).toMatch(/missing in the after/);
   });
 });
