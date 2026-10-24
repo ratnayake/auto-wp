@@ -3,14 +3,16 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 mkdir -p "$TMP" "$E2E/.cache/wp-cli"
 START=$(date +%s)
+STARTED_AGENT=
+# Don't leak the ssh-agent if anything after it fails.
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$STARTED_AGENT" ]; then kill "$STARTED_AGENT" 2>/dev/null || true; fi' EXIT
 
 # Free host ports (defaults 8080/8081/8090/2222; bumped if something else holds them).
 if [ ! -f "$TMP/ports.env" ]; then
-  # no subshells: pick_port records choices in $PICKED
-  p1=$(pick_port 8080); PICKED="$PICKED$p1 "
-  p2=$(pick_port 8081); PICKED="$PICKED$p2 "
-  p3=$(pick_port 8090); PICKED="$PICKED$p3 "
-  p4=$(pick_port 2222)
+  pick_port 8080; p1=$PICKED_PORT
+  pick_port 8081; p2=$PICKED_PORT
+  pick_port 8090; p3=$PICKED_PORT
+  pick_port 2222; p4=$PICKED_PORT
   printf 'AUTOWP_PORT_SSH_HTTP=%s\nAUTOWP_PORT_LOCKED_HTTP=%s\nAUTOWP_PORT_FEEDS=%s\nAUTOWP_PORT_SSH=%s\n' "$p1" "$p2" "$p3" "$p4" >"$TMP/ports.env"
 fi
 load_ports
@@ -24,18 +26,20 @@ dc up -d --build --wait
 
 # Pin the host key sshd generated at first start.
 for _ in $(seq 1 20); do
-  ssh-keyscan -p "$AUTOWP_PORT_SSH" -t ed25519 localhost 2>/dev/null >"$TMP/known_hosts" && [ -s "$TMP/known_hosts" ] && break
+  ssh-keyscan -p "$AUTOWP_PORT_SSH" -t ed25519 localhost 2>/dev/null | grep -v "^#" | head -n 1 >"$TMP/known_hosts"; [ -s "$TMP/known_hosts" ] && break
   sleep 1
 done
 [ -s "$TMP/known_hosts" ] || { echo "ssh-keyscan failed" >&2; exit 1; }
-FPR=$(ssh-keygen -lf "$TMP/known_hosts" | awk '{print $2}')
+FPR=$(ssh-keygen -lf "$TMP/known_hosts" | awk 'NR==1{print $2}')
 
 "$E2E/scripts/seed.sh"
 
 # ssh-agent with the key loaded (for the MCP server's SSH transport).
 if [ -f "$TMP/agent.pid" ] && kill -0 "$(cat "$TMP/agent.pid")" 2>/dev/null; then :; else
+  rm -f "$TMP/agent.sock" # stale socket from a crashed run
   eval "$(ssh-agent -s -a "$TMP/agent.sock")" >/dev/null
   echo "$SSH_AGENT_PID" >"$TMP/agent.pid"
+  STARTED_AGENT=$SSH_AGENT_PID
   ssh-add -q "$TMP/id_ed25519"
 fi
 

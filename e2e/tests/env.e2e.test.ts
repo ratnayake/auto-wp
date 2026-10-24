@@ -76,9 +76,14 @@ describe.skipIf(!ENABLED)('e2e environment', () => {
     });
 
     it('the pinned fingerprint matches what sshd presents', () => {
-      const fpr = mustOk(run('bash', ['-c', `ssh-keygen -lf ${knownHosts} | awk '{print $2}'`]));
-      expect(fpr).toMatch(/^SHA256:/);
-      expect(fpr).toBe(process.env.AUTOWP_E2E_HOST_FPR);
+      const pinned = mustOk(run('bash', ['-c', `ssh-keygen -lf ${knownHosts} | awk 'NR==1{print $2}'`]));
+      expect(pinned).toMatch(/^SHA256:/);
+      expect(pinned).toBe(process.env.AUTOWP_E2E_HOST_FPR);
+      // compare against the key inside the container, not against our own scan
+      const inContainer = mustOk(
+        dexec(SSH_CONTAINER, "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}'"),
+      );
+      expect(pinned).toBe(inContainer);
     });
 
     it('password authentication is refused', () => {

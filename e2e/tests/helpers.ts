@@ -9,7 +9,10 @@ const ENV_FILE = join(E2E_DIR, '.tmp', 'env');
 /** Load e2e/.tmp/env (written by up.sh) into process.env when e2e is enabled. */
 export function loadEnv(): Record<string, string> {
   const out: Record<string, string> = {};
-  if (process.env.AUTOWP_E2E !== '1' || !existsSync(ENV_FILE)) return out;
+  if (process.env.AUTOWP_E2E !== '1') return out;
+  if (!existsSync(ENV_FILE)) {
+    throw new Error(`AUTOWP_E2E=1 but ${ENV_FILE} is missing: run e2e/scripts/up.sh first`);
+  }
   for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
     if (m?.[1] !== undefined && m[2] !== undefined) out[m[1]] = m[2];

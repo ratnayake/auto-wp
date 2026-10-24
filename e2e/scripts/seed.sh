@@ -51,15 +51,16 @@ wp_locked plugin activate autowp-breaker
 # HTTP-served probe proving exec() is disabled for web requests.
 cat "$E2E/fixtures/autowp-probe.php" | dc run --rm -T wpcli-locked sh -c 'cat > /var/www/html/autowp-probe.php'
 
-# --- agent (built by another unit; optional) ---
+# --- agent (agent-php/; override the location with AUTOWP_AGENT_PHP_DIR) ---
 rm -f "$TMP/agent-installed"
-if [ -f "$ROOT/agent-php/dist/agent.php" ] && [ -f "$ROOT/agent-php/bin/install.php" ]; then
-  PUB=$(python3 -c "import json;print(json.load(open('$ROOT/packages/contracts/test-vectors.json'))['ed25519']['publicKeyB64'])")
-  KEYID=$(python3 -c "import json;print(json.load(open('$ROOT/packages/contracts/test-vectors.json'))['keyId'])")
-  # Run as www-data (uid 33) inside a php container sharing the wp-locked volume.
-  docker run --rm -u 33:33 -v "autowp-e2e_locked-html:/var/www/html" -v "$ROOT/agent-php:/agent-php:ro" php:8.4-cli \
-    php /agent-php/bin/install.php --target=/var/www/html --dir=auto-wp-agent --site-id=site-agent \
-    --key-id="$KEYID" --public-key="$PUB" --algorithm=ed25519 && touch "$TMP/agent-installed"
+AGENT_DIR="${AUTOWP_AGENT_PHP_DIR:-$ROOT/agent-php}"
+if [ -f "$AGENT_DIR/dist/agent.php" ] && [ -f "$AGENT_DIR/bin/install.php" ]; then
+  VEC="$ROOT/packages/contracts/test-vectors.json"
+  PUB=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['ed25519']['publicKeyB64'])" "$VEC")
+  KEYID=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['keyId'])" "$VEC")
+  # Run as www-data (uid 33) in a php container sharing the wp-locked volume; deploys <docroot>/auto-wp-agent/.
+  docker run --rm -u 33:33 -v "autowp-e2e_locked-html:/var/www/html" -v "$AGENT_DIR:/agent-php:ro" php:8.4-cli     php /agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id "$KEYID" \
+    --ed25519-public-key "$PUB" --force && touch "$TMP/agent-installed"
 else
   echo "agent-php not built; agent scenarios will be skipped"
 fi

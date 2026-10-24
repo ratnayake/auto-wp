@@ -3,12 +3,12 @@
 Docker-based environment with two real WordPress 6.5.2 sites plus mock vulnerability/update feeds, and vitest
 scenarios that drive the MCP server over stdio.
 
-| Service | Role | Host port |
-|---|---|---|
-| `wp-ssh` | WordPress + apache + sshd + wp-cli, user `cpuser`, key-only login | 8080 (http), 2222 (ssh) |
-| `wp-locked` | WordPress, no sshd/wp-cli, `exec`-family disabled, `max_execution_time=30` | 8081 |
-| `mock-feeds` | nginx: `wordfence-v3.json` (CVEs for contact-form-7 < 5.8.4, twentytwentyfour < 1.1, core < 6.5.5) and the breaker plugin zips | 8090 |
-| `db` | MariaDB 10.11 (`wp_ssh`, `wp_locked`) | - |
+| Service      | Role                                                                                                                           | Host port               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
+| `wp-ssh`     | WordPress + apache + sshd + wp-cli, user `cpuser`, key-only login                                                              | 8080 (http), 2222 (ssh) |
+| `wp-locked`  | WordPress, no sshd/wp-cli, `exec`-family disabled, `max_execution_time=30`                                                     | 8081                    |
+| `mock-feeds` | nginx: `wordfence-v3.json` (CVEs for contact-form-7 < 5.8.4, twentytwentyfour < 1.1, core < 6.5.5) and the breaker plugin zips | 8090                    |
+| `db`         | MariaDB 10.11 (`wp_ssh`, `wp_locked`)                                                                                          | -                       |
 
 If a default port is taken, `up.sh` picks the next free one and records it in `.tmp/ports.env` / `.tmp/env`
 (`AUTOWP_E2E_PORT_*`); the tests read those.
@@ -46,8 +46,11 @@ Gated behind `AUTOWP_E2E_REAL=1` (`tests/scenario.e2e.test.ts`): the full MCP fl
 check/apply, report, restore, audit) over `StdioClientTransport`. The MCP server uses FAKE services until the
 integration step, so these are skipped by default; tool-result shapes are matched loosely and will need tightening
 once real services are wired. The `site-agent` scenario additionally needs `agent-php/dist/agent.php`: `seed.sh`
-installs it on `wp-locked` via `agent-php/bin/install.php` (flags are a best guess: `--target --dir --site-id --key-id
---public-key --algorithm`; adjust to the real installer) and `up.sh` sets `AUTOWP_E2E_AGENT=1` when it succeeded. The
-agent signing key is exported as `AUTOWP_SECRET_SITE_AGENT_SIGNING_KEY` (secret-store wiring is pending).
+installs it on `wp-locked` via `agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id <vector keyId>
+--ed25519-public-key <vector pubkey> --force` (set `AUTOWP_AGENT_PHP_DIR` to use another checkout) and `up.sh` sets
+`AUTOWP_E2E_AGENT=1` when it succeeded. The agent signing key is exported as `AUTOWP_SECRET_SITE_AGENT_SIGNING_KEY`
+(secret-store wiring is pending).
+
+`AUTOWP_E2E=1` is required; with it set but `e2e/.tmp/env` missing, the run fails loudly ("run up.sh first").
 
 The apply scenario passes `only` (cf7, theme, breaker) so core and classic-editor stay untouched.

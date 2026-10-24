@@ -122,7 +122,7 @@ describe.skipIf(!REAL)('MCP flow: site-ssh', () => {
   it('5. updates_apply dryRun changes no files', async () => {
     const before = sha(SSH_CONTAINER, PLUGINS);
     const { runId: id } = await call('updates_apply', { siteId, backupId, only, dryRun: true });
-    await waitRun(id);
+    expect((await waitRun(id)).status).toBe('done');
     expect(sha(SSH_CONTAINER, PLUGINS)).toBe(before);
   });
 
@@ -178,6 +178,7 @@ describe.skipIf(!REAL || !AGENT)('MCP flow: site-agent (exec disabled)', () => {
     try {
       const res: any = await c.callTool({ name: 'site_probe', arguments: { siteId: 'site-agent' } });
       expect(res.isError).toBeFalsy();
+      expect(JSON.stringify(res)).toContain('6.5.2');
     } finally {
       await c.close();
     }

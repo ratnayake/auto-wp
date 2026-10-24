@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 load_ports
 dc --profile tools down -v --remove-orphans || true

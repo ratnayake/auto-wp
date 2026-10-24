@@ -27,7 +27,8 @@ services:
     environment:
       WP_CLI_CACHE_DIR: /wpcli-cache
     healthcheck:
-      test: ["CMD", "bash", "-c", "curl -s -o /dev/null http://localhost/ && (exec 3<>/dev/tcp/127.0.0.1/22)"]
+      test:
+        ["CMD", "bash", "-c", "curl -fs -o /dev/null http://localhost/ && (exec 3<>/dev/tcp/127.0.0.1/22)"]
       interval: 3s
       timeout: 5s
       retries: 40
@@ -42,7 +43,7 @@ services:
       - locked-html:/var/www/html
       - ./docker/wp-locked/locked.ini:/usr/local/etc/php/conf.d/zz-locked.ini:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost/"]
+      test: ["CMD-SHELL", "curl -fs -o /dev/null http://localhost/"]
       interval: 3s
       timeout: 5s
       retries: 40
