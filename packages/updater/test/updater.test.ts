@@ -36,8 +36,8 @@ describe('DefaultUpdater', () => {
     expect(seq.slice(0, 9)).toEqual([
       'call:lock.acquire',
       'call:fs.archive',
-      'call:db.dump',
       'call:wp.maintenance',
+      'call:db.dump',
       'call:wp.upgrade',
       'call:wp.inventory',
       'call:cache.flush',
@@ -217,6 +217,32 @@ describe('DefaultUpdater', () => {
     expect(res[0]?.outcome).toBe('updated');
     expect(callOps(t.conn, 'fs.archive')).toHaveLength(0);
     expect(res[0]?.operations[0]).toMatch(/reusing/);
+  });
+
+  it('resume re-applies the core-failure stop instead of updating the remaining items', async () => {
+    const t = setup({ health: new FakeHealth([BAD, OK]) });
+    await collect(t.updater.apply(site, t.conn, [core, foo], t.opts));
+    const res = await collect(t.updater.apply(site, t.conn, [core, foo], t.opts));
+    expect(res.map((r) => r.outcome)).toEqual(['failed-rolled-back', 'skipped']);
+    expect(callOps(t.conn, 'wp.upgrade')).toHaveLength(1);
+    expect((await t.runs.get('run1'))?.status).toBe('aborted');
+  });
+
+  it('refuses to resume a run with a different plan', async () => {
+    const t = setup();
+    await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    await expect(collect(t.updater.apply(site, t.conn, [foo, bar], t.opts))).rejects.toThrow(
+      /different plan/,
+    );
+  });
+
+  it('a lock conflict on resume does not overwrite the stored run record', async () => {
+    const t = setup();
+    await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    const before = await t.runs.get('run1');
+    t.conn.onCall('lock.acquire', () => ({ acquired: false, holder: 'other' }));
+    await expect(collect(t.updater.apply(site, t.conn, [foo], t.opts))).rejects.toThrow(/locked/);
+    expect(await t.runs.get('run1')).toEqual(before);
   });
 
   it('held items are yielded untouched', async () => {

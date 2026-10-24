@@ -13,6 +13,7 @@ import type {
 import type { NeedsDbSnapshot } from './db-snapshot-policy.js';
 import { assertSafeItem, itemSnapshotBase } from './paths.js';
 import type { DbSnapshot, Remote } from './remote.js';
+import { msg } from './util.js';
 
 /**
  * Site object handed to `HealthChecker.quick` while maintenance mode is on. `bypassCookie` carries the
@@ -49,8 +50,6 @@ interface Targets {
 
 type Partial_ = Omit<ItemResult, 'item' | 'startedAt' | 'finishedAt' | 'operations'>;
 
-const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
 export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemRunResult> {
   const startedAt = ctx.clock.now().toISOString();
   const ops: string[] = [];
@@ -82,10 +81,10 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
 
   if (ctx.opts.dryRun) {
     ops.push(`snapshot files ${targets.paths.join(' ')} -> ${archive}`);
+    ops.push('maintenance on (with bypass token)');
     ops.push(
       wantDb ? `snapshot db -> ${base}.${remote.wpCli ? 'sql' : 'sql.gz'}` : 'snapshot db: skipped by policy',
     );
-    ops.push('maintenance on (with bypass token)');
     ops.push(...updateOps);
     ops.push(`verify installed version = ${item.newVersion}`);
     ops.push('cache flush');
@@ -98,25 +97,19 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
     return finish({ outcome: 'dry-run' });
   }
 
-  // 1-2. Snapshots. Nothing has been changed yet, so a failure here just skips the item. An existing
-  // snapshot (from an interrupted attempt of this run) is reused, never overwritten: it holds the
-  // pre-update state, whereas the site may now be half-updated.
-  let dbSnap: DbSnapshot | undefined;
+  // 1. Item snapshot. Nothing has been changed yet, so a failure here just skips the item. An existing
+  // snapshot (left by an interrupted attempt of this run) is reused, never overwritten: it holds the
+  // pre-update state, whereas the site may now be half-updated. Snapshots created by an attempt that ends
+  // up skipped before anything changed are deleted again so a later resume cannot reuse stale data.
+  const created: string[] = [];
   try {
     await c.mkdir(itemsDir, { recursive: true });
     if (await isFile(c, archive)) ops.push(`snapshot files: reusing ${archive}`);
     else {
       await remote.archive(archive, targets.paths);
+      created.push(archive);
       ops.push(`snapshot files ${targets.paths.join(' ')} -> ${archive}`);
     }
-    if (wantDb) {
-      dbSnap = await existingDbSnapshot(c, base);
-      if (dbSnap) ops.push(`snapshot db: reusing ${dbSnap.path}`);
-      else {
-        dbSnap = await remote.dbDump(base);
-        ops.push(`snapshot db -> ${dbSnap.path}`);
-      }
-    } else ops.push('snapshot db: skipped by policy');
   } catch (e) {
     return skipped(`snapshot failed: ${msg(e)}`);
   }
@@ -125,7 +118,16 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
   const site: SiteWithBypass = { ...ctx.site, bypassCookie: token };
   let outcome: Partial_;
   try {
-    outcome = await updateAndCheck(ctx, site, item, targets, archive, dbSnap, updateOps, ops, token);
+    outcome = await updateAndCheck(
+      ctx,
+      site,
+      item,
+      targets,
+      { archive, base, wantDb, created },
+      updateOps,
+      ops,
+      token,
+    );
   } finally {
     // 8. Always attempted, even after exceptions.
     try {
@@ -140,6 +142,7 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
       );
     }
   }
+  if (outcome.outcome === 'skipped') for (const p of created) await c.remove(p).catch(() => undefined);
   if (maintenanceOffFailed) {
     const note = 'maintenance mode could not be disabled';
     outcome = { ...outcome, error: outcome.error ? `${outcome.error}; ${note}` : note };
@@ -152,12 +155,12 @@ async function updateAndCheck(
   site: SiteWithBypass,
   item: UpdateItem,
   targets: Targets,
-  archive: string,
-  dbSnap: DbSnapshot | undefined,
+  snap: { archive: string; base: string; wantDb: boolean; created: string[] },
   updateOps: string[],
   ops: string[],
   token: string,
 ): Promise<Partial_> {
+  const { archive } = snap;
   const { remote, logger } = ctx;
   const key = `${item.type}:${item.slug}`;
 
@@ -168,6 +171,23 @@ async function updateAndCheck(
   } catch (e) {
     logger.warn({ item: key, error: msg(e) }, 'maintenance on failed; item skipped');
     return { outcome: 'skipped', error: `maintenance on failed: ${msg(e)}` };
+  }
+
+  // 2. DB snapshot, taken under maintenance so no writes land between the dump and the update.
+  let dbSnap: DbSnapshot | undefined;
+  try {
+    if (snap.wantDb) {
+      dbSnap = await existingDbSnapshot(remote.c, snap.base);
+      if (dbSnap) ops.push(`snapshot db: reusing ${dbSnap.path}`);
+      else {
+        dbSnap = await remote.dbDump(snap.base);
+        snap.created.push(dbSnap.path);
+        ops.push(`snapshot db -> ${dbSnap.path}`);
+      }
+    } else ops.push('snapshot db: skipped by policy');
+  } catch (e) {
+    logger.warn({ item: key, error: msg(e) }, 'db snapshot failed; item skipped');
+    return { outcome: 'skipped', error: `db snapshot failed: ${msg(e)}` };
   }
 
   // 4. Update + verify.

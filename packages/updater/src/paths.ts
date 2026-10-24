@@ -39,14 +39,23 @@ export function itemSnapshotBase(item: UpdateItem): string {
   return `${item.type}-${item.slug}-${item.currentVersion}`;
 }
 
-/** Top-level directory name of the agent below wpRoot, if the site uses the web agent. */
-export function agentDirName(site: SiteConfig): string | undefined {
+const WP_DIRS = new Set(['wp-admin', 'wp-content', 'wp-includes']);
+
+/**
+ * Where the web agent lives below wpRoot. `topLevel` is the root entry to leave alone during a file restore
+ * (the agent's own directory, or the agent file itself). `nested` is set when the agent sits inside a
+ * WordPress directory, where a whole-tree swap would move it away mid-restore.
+ */
+export function agentLocation(site: SiteConfig): { topLevel?: string; nested?: string } {
   const t = site.transport;
   const endpoint = t.kind === 'agent' ? t.endpoint : t.kind === 'sftp+agent' ? t.agent.endpoint : undefined;
-  if (!endpoint) return undefined;
+  if (!endpoint) return {};
   let rel = new URL(endpoint).pathname;
   const sitePath = new URL(site.url).pathname.replace(/\/+$/, '');
   if (sitePath && rel.startsWith(`${sitePath}/`)) rel = rel.slice(sitePath.length);
-  const first = rel.split('/').filter(Boolean);
-  return first.length > 1 ? first[0] : undefined;
+  const segs = rel.split('/').filter(Boolean);
+  const first = segs[0];
+  if (!first) return {};
+  if (segs.length === 1 || (segs.length === 2 && !WP_DIRS.has(first))) return { topLevel: first };
+  return { nested: segs.join('/') };
 }

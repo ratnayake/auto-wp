@@ -19,6 +19,7 @@ import { type ItemContext, runItem } from './item-runner.js';
 import { assertSafeId, backupRoot } from './paths.js';
 import { Remote } from './remote.js';
 import { randomBypassToken } from './token.js';
+import { msg } from './util.js';
 
 export interface DefaultUpdaterDeps {
   health: HealthChecker;
@@ -47,8 +48,6 @@ const FINAL: ReadonlySet<ItemOutcome> = new Set<ItemOutcome>([
   'failed-rollback-failed',
   'dry-run',
 ]);
-
-const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export class DefaultUpdater implements Updater {
   constructor(private readonly deps: DefaultUpdaterDeps) {}
@@ -81,6 +80,9 @@ export class DefaultUpdater implements Updater {
         throw new Error(`run ${o.runId} was created with dryRun=${existing.dryRun}`);
       if (existing.status === 'needs-restore')
         throw new Error(`run ${o.runId} needs a restore; refusing to resume it`);
+      const sig = (items: UpdateItem[]) => items.map((i) => `${itemKey(i)}@${i.newVersion}`).join(',');
+      if (sig(existing.plan) !== sig(plan))
+        throw new Error(`run ${o.runId} was started with a different plan; use a new runId`);
     }
     const prior = new Map<string, ItemResult>();
     for (const r of existing?.results ?? []) if (FINAL.has(r.outcome)) prior.set(itemKey(r.item), r);
@@ -107,7 +109,25 @@ export class DefaultUpdater implements Updater {
     };
 
     let locked = false;
-    let status: RunStatus = 'done';
+    /** False until this call owns the run (lock held); a run we do not own is never written. */
+    let owned = false;
+    let status = 'done' as RunStatus;
+    const stopFor = (item: UpdateItem, r: ItemResult, maintenanceOffFailed: boolean): string | undefined => {
+      const key = itemKey(item);
+      if (r.outcome === 'failed-rollback-failed') {
+        status = 'needs-restore';
+        return `run stopped: rollback of ${key} failed; site needs a restore`;
+      }
+      if (maintenanceOffFailed) {
+        status = 'aborted';
+        return `run stopped: maintenance mode could not be disabled after ${key}`;
+      }
+      if (r.outcome === 'failed-rolled-back' && (item.type === 'core' || stopOnFailure)) {
+        status = 'aborted';
+        return `run stopped after failed ${key} (rolled back)`;
+      }
+      return undefined;
+    };
     try {
       if (!dryRun) {
         const lock = await c.call('lock.acquire', { runId: o.runId, ttlSec: o.lockTtlSec ?? 7200 });
@@ -115,6 +135,7 @@ export class DefaultUpdater implements Updater {
           throw new Error(`site is locked by ${lock.holder ?? 'another run'} until ${lock.expiresAt ?? '?'}`);
         locked = true;
       }
+      owned = true;
       await persist();
 
       if (existing && !dryRun) {
@@ -142,6 +163,9 @@ export class DefaultUpdater implements Updater {
         const key = itemKey(item);
         const done = prior.get(key);
         if (done) {
+          // Replayed results re-apply the stop rules, so resuming cannot bypass a core-failure stop.
+          stopReason ??= stopFor(item, done, false);
+          if (stopReason) record.error = stopReason;
           yield done;
           continue;
         }
@@ -177,16 +201,7 @@ export class DefaultUpdater implements Updater {
         logger.info({ runId: o.runId, item: key, dryRun }, 'processing item');
         const { result, maintenanceOffFailed } = await runItem(ctx, item);
         results.set(key, result);
-        if (result.outcome === 'failed-rollback-failed') {
-          status = 'needs-restore';
-          stopReason = `run stopped: rollback of ${key} failed; site needs a restore`;
-        } else if (maintenanceOffFailed) {
-          status = 'aborted';
-          stopReason = `run stopped: maintenance mode could not be disabled after ${key}`;
-        } else if (result.outcome === 'failed-rolled-back' && (item.type === 'core' || stopOnFailure)) {
-          status = 'aborted';
-          stopReason = `run stopped after failed ${key} (rolled back)`;
-        }
+        stopReason = stopFor(item, result, maintenanceOffFailed);
         if (stopReason) record.error = stopReason;
         record.status = status === 'needs-restore' ? 'needs-restore' : 'running';
         await persist();
@@ -194,9 +209,11 @@ export class DefaultUpdater implements Updater {
       }
       record.status = status;
     } catch (e) {
-      record.status = record.status === 'needs-restore' ? 'needs-restore' : 'aborted';
-      record.error = msg(e);
-      logger.error({ runId: o.runId, error: record.error }, 'update run aborted');
+      logger.error({ runId: o.runId, error: msg(e) }, 'update run aborted');
+      if (owned) {
+        record.status = record.status === 'needs-restore' ? 'needs-restore' : 'aborted';
+        record.error = msg(e);
+      }
       throw e;
     } finally {
       if (locked) {
@@ -206,13 +223,15 @@ export class DefaultUpdater implements Updater {
           logger.error({ runId: o.runId, error: msg(e) }, 'failed to release site lock');
         }
       }
-      // A consumer that stops iterating early leaves the run unfinished but resumable.
-      if (record.status === 'running') record.status = 'aborted';
-      record.finishedAt = clock.now().toISOString();
-      try {
-        await persist();
-      } catch (e) {
-        logger.error({ runId: o.runId, error: msg(e) }, 'failed to persist final run record');
+      if (owned) {
+        // A consumer that stops iterating early leaves the run unfinished but resumable.
+        if (record.status === 'running') record.status = 'aborted';
+        record.finishedAt = clock.now().toISOString();
+        try {
+          await persist();
+        } catch (e) {
+          logger.error({ runId: o.runId, error: msg(e) }, 'failed to persist final run record');
+        }
       }
     }
   }

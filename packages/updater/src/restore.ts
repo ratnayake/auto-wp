@@ -15,8 +15,9 @@ import {
   type VerificationResult,
 } from '@auto-wp/contracts';
 import { canonicalJson, sha256Hex } from './canonical-json.js';
-import { agentDirName, assertSafeId, backupRootCandidates } from './paths.js';
+import { agentLocation, assertSafeId, backupRootCandidates } from './paths.js';
 import { Remote } from './remote.js';
+import { msg } from './util.js';
 
 export const MANIFEST_FILE = 'manifest.json';
 export const DB_ARTIFACT = 'db.sql.gz';
@@ -36,7 +37,6 @@ interface Loaded {
   manifest: BackupManifest;
 }
 
-const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const wantsDb = (s: RestorePlan['scope']) => s !== 'files';
 const wantsFiles = (s: RestorePlan['scope']) => s !== 'db';
 
@@ -107,20 +107,36 @@ export class DefaultRestoreService implements RestoreService {
     let step = 'maintenance on';
     const ts = clock.now().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
     const aside = `${loaded.dir}/pre-restore-${ts}`;
+    const preDump = `${aside}.sql.gz`;
+    let dbReplaced = false;
     let failed: string | undefined;
     try {
       try {
         await c.call('wp.maintenance', { enabled: true });
         if (wantsDb(plan.scope)) {
+          // Keep the current DB so a failed restore can be undone. No dump, no import.
+          step = 'db dump current';
+          await c.call('db.dump', { dest: preDump, excludeTables: [] });
           step = 'db import';
+          dbReplaced = true;
           await c.call('db.import', { source: `${loaded.dir}/${DB_ARTIFACT}` });
         }
         if (wantsFiles(plan.scope)) {
           step = 'files';
-          await swapFiles(c, remote, site, loaded.dir, aside, (s) => {
+          const carryFailures = await swapFiles(c, remote, site, loaded, aside, (s) => {
             step = s;
           });
           checks.push({ name: 'files.swap', ok: true, severity: 'info', details: { preRestoreDir: aside } });
+          if (carryFailures.length)
+            checks.push({
+              name: 'files.carryOver',
+              ok: false,
+              severity: 'error',
+              details: {
+                message: 'excluded paths could not be moved back from the pre-restore tree',
+                carryFailures,
+              },
+            });
         }
         step = 'cache flush';
         await c.call('cache.flush', { opcache: true, objectCache: true }).catch((e: unknown) => {
@@ -135,6 +151,7 @@ export class DefaultRestoreService implements RestoreService {
           severity: 'error',
           details: { step, error: msg(e), preRestoreDir: wantsFiles(plan.scope) ? aside : undefined },
         });
+        if (dbReplaced) checks.push(await revertDb(c, preDump, logger));
       } finally {
         try {
           await c.call('wp.maintenance', { enabled: false });
@@ -160,19 +177,36 @@ export class DefaultRestoreService implements RestoreService {
   }
 }
 
+async function revertDb(c: SiteConnection, preDump: string, logger: Logger): Promise<Check> {
+  try {
+    await c.call('db.import', { source: preDump });
+    return {
+      name: 'db.revert',
+      ok: true,
+      severity: 'warn',
+      details: { message: 'pre-restore DB re-imported' },
+    };
+  } catch (e) {
+    logger.error({ error: msg(e), preDump }, 'could not re-import the pre-restore DB');
+    return { name: 'db.revert', ok: false, severity: 'error', details: { error: msg(e), preDump } };
+  }
+}
+
 /**
- * Extract to staging, move the live tree aside (except backups, the agent and the maintenance flag),
- * then move staging into place. If moving aside fails part-way, already-moved entries are put back.
+ * Extract to staging, move the live tree aside (except backups, the agent, the maintenance flag and
+ * top-level paths the backup excluded), move staging into place, then move nested excluded paths (and a
+ * wp-config.php the backup lacks) back from the aside tree. Either move phase is undone if it fails
+ * part-way. Returns carry-over paths that could not be moved back.
  */
 async function swapFiles(
   c: SiteConnection,
   remote: Remote,
   site: SiteConfig,
-  dir: string,
+  { dir, manifest }: Loaded,
   aside: string,
   setStep: (s: string) => void,
-): Promise<void> {
-  const keep = keepInPlace(site);
+): Promise<string[]> {
+  const { keep, carry } = fileRules(site, manifest);
   const staging = `${dir}/restore-staging`;
   setStep('files extract to staging');
   if (await c.stat(staging)) await c.remove(staging, { recursive: true });
@@ -184,26 +218,63 @@ async function swapFiles(
   setStep('files move current tree aside');
   await c.mkdir(aside, { recursive: true });
   const live = (await c.list('.')).map((e) => posix.basename(e.path)).filter((n) => !keep.has(n));
-  const moved: string[] = [];
+  const movedOut: string[] = [];
+  const movedIn: string[] = [];
+  const undo = async () => {
+    for (const n of movedIn.reverse()) await c.rename(n, `${staging}/${n}`).catch(() => undefined);
+    for (const n of movedOut.reverse()) await c.rename(`${aside}/${n}`, n).catch(() => undefined);
+  };
   try {
     for (const n of live) {
       await c.rename(n, `${aside}/${n}`);
-      moved.push(n);
+      movedOut.push(n);
+    }
+    setStep('files move staging into place');
+    for (const n of staged) {
+      await c.rename(`${staging}/${n}`, n);
+      movedIn.push(n);
     }
   } catch (e) {
-    for (const n of moved.reverse()) await c.rename(`${aside}/${n}`, n).catch(() => undefined);
+    await undo();
     throw e;
   }
 
-  setStep('files move staging into place');
-  for (const n of staged) await c.rename(`${staging}/${n}`, n);
+  setStep('files carry over excluded paths');
+  const failures: string[] = [];
+  for (const p of carry) {
+    try {
+      if ((await c.stat(p)) || !(await c.stat(`${aside}/${p}`))) continue;
+      const parent = posix.dirname(p);
+      if (parent !== '.') await c.mkdir(parent, { recursive: true });
+      await c.rename(`${aside}/${p}`, p);
+    } catch {
+      failures.push(p);
+    }
+  }
+  return failures;
 }
 
-function keepInPlace(site: SiteConfig): Set<string> {
+/**
+ * keep: top-level names never moved. carry: nested paths restored from the live tree when the backup
+ * does not contain them. Glob excludes cannot be carried over and are only reported in the plan.
+ */
+function fileRules(
+  site: SiteConfig,
+  manifest: BackupManifest,
+): { keep: Set<string>; carry: string[]; globs: string[] } {
   const keep = new Set([BACKUP_DIR_NAME, '.maintenance']);
-  const agent = agentDirName(site);
+  const agent = agentLocation(site).topLevel;
   if (agent) keep.add(agent);
-  return keep;
+  const carry = new Set(['wp-config.php']);
+  const globs: string[] = [];
+  for (const raw of manifest.files.excludes) {
+    const p = posix.normalize(raw.replace(/^\.?\/+/, '')).replace(/\/+$/, '');
+    if (/[*?[\]]/.test(p)) globs.push(raw);
+    else if (!p || p === '.' || p.startsWith('..')) continue;
+    else if (!p.includes('/')) keep.add(p);
+    else carry.add(p);
+  }
+  return { keep, carry: [...carry].sort(), globs };
 }
 
 function requiredArtifacts(scope: RestorePlan['scope']): string[] {
@@ -237,15 +308,24 @@ function buildSteps(site: SiteConfig, { dir, manifest }: Loaded, scope: RestoreP
     if (art.encrypted)
       throw new RestoreRefusedError(`artifact ${name} is encrypted; decrypt it before restoring`);
   }
-  const keep = [...keepInPlace(site)].sort().join(', ');
   const steps = ['maintenance on'];
-  if (wantsDb(scope)) steps.push(`db import ${dir}/${DB_ARTIFACT}`);
-  if (wantsFiles(scope))
+  if (wantsDb(scope))
+    steps.push(`db dump current -> ${dir}/pre-restore-<timestamp>.sql.gz`, `db import ${dir}/${DB_ARTIFACT}`);
+  if (wantsFiles(scope)) {
+    const nested = agentLocation(site).nested;
+    if (nested)
+      throw new RestoreRefusedError(
+        `the agent is installed at ${nested}; a file restore would move it away mid-restore`,
+      );
+    const { keep, carry, globs } = fileRules(site, manifest);
     steps.push(
       `files extract ${dir}/${FILES_ARTIFACT} -> ${dir}/restore-staging`,
-      `files move current tree -> ${dir}/pre-restore-<timestamp> (keeping ${keep})`,
+      `files move current tree -> ${dir}/pre-restore-<timestamp> (keeping ${[...keep].sort().join(', ')})`,
       `files move ${dir}/restore-staging/* -> site root`,
+      `files carry over from current tree if absent in backup: ${carry.join(', ')}`,
     );
+    if (globs.length) steps.push(`files NOT carried over (pattern excludes): ${globs.join(', ')}`);
+  }
   steps.push('cache flush', 'maintenance off');
   if (wantsDb(scope)) steps.push('verify db row counts against manifest');
   return steps;

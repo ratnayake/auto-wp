@@ -134,9 +134,10 @@ describe('DefaultRestoreService', () => {
     const idx = (s: string) => seq.findIndex((x) => x.startsWith(s));
     expect(idx('call:lock.acquire')).toBe(0);
     expect(seq[1]).toBe('call:wp.maintenance');
-    expect(seq[2]).toBe('call:db.import');
-    expect(seq[3]).toBe('call:fs.extract');
-    expect(idx('rename wp-config.php')).toBeGreaterThan(3);
+    expect(seq[2]).toBe('call:db.dump');
+    expect(seq[3]).toBe('call:db.import');
+    expect(seq[4]).toBe('call:fs.extract');
+    expect(idx('rename wp-config.php')).toBeGreaterThan(4);
     expect(idx(`rename ${DIR}/restore-staging/`)).toBeGreaterThan(idx('rename wp-config.php'));
     expect(idx('call:cache.flush')).toBeGreaterThan(idx(`rename ${DIR}/restore-staging/`));
     expect(seq.slice(-3)).toEqual(['call:wp.maintenance', 'call:db.info', 'call:lock.release']);
@@ -202,6 +203,84 @@ describe('DefaultRestoreService', () => {
     const f = (q: string) => t.conn.files.get(t.conn.resolve(q))?.toString();
     expect(f('wp-config.php')).toBe('<?php // secrets');
     expect(f('index.php')).toBe('<?php // index');
+  });
+
+  it('a file-phase failure after the DB import re-imports the pre-restore DB', async () => {
+    const t = setup();
+    const p = await t.svc.plan(site, t.conn, ID, 'full');
+    t.conn.failNext('call:fs.extract', new Error('disk full'));
+    const v = await t.svc.execute(site, t.conn, p, approve(p.planHash));
+    expect(v.ok).toBe(false);
+    expect(v.checks.find((c) => c.name === 'db.revert')?.ok).toBe(true);
+    expect(t.state.db).toBe('db-original');
+    expect(t.conn.files.get(t.conn.resolve('wp-config.php'))?.toString()).toBe('<?php // secrets');
+  });
+
+  it('undoes both move phases if moving staging into place fails part-way', async () => {
+    const t = setup();
+    const p = await t.svc.plan(site, t.conn, ID, 'files');
+    const orig = t.conn.rename.bind(t.conn);
+    let n = 0;
+    t.conn.rename = async (from, to) => {
+      if (from.includes('restore-staging/') && ++n === 2) throw new Error('EACCES');
+      return orig(from, to);
+    };
+    const v = await t.svc.execute(site, t.conn, p, approve(p.planHash));
+    expect(v.ok).toBe(false);
+    const f = (q: string) => t.conn.files.get(t.conn.resolve(q))?.toString();
+    expect(f('wp-config.php')).toBe('<?php // secrets');
+    expect(f('index.php')).toBe('<?php // index');
+    expect(f('wp-content/plugins/extra/extra.php')).toBe('added after backup');
+  });
+
+  it('carries excluded paths and a missing wp-config.php over from the live tree', async () => {
+    const t = setup();
+    const archive = JSON.stringify({
+      'index.php': Buffer.from('<?php // restored index').toString('base64'),
+    });
+    const manifest = {
+      ...t.manifest,
+      files: { ...t.manifest.files, excludes: ['auto-wp-backup', 'wp-content/uploads', '*.log', 'cache'] },
+      artifacts: [
+        t.manifest.artifacts[0]!,
+        { name: 'files.tar.gz', bytes: archive.length, sha256: sha(archive) },
+      ],
+    };
+    t.conn.seed({
+      [`${DIR}/manifest.json`]: JSON.stringify(manifest),
+      [`${DIR}/files.tar.gz`]: archive,
+      'wp-content/uploads/2026/a.jpg': 'jpeg',
+      'cache/x': 'cached',
+    });
+    const p = await t.svc.plan(site, t.conn, ID, 'files');
+    expect(p.steps.some((s) => s.includes('pattern excludes): *.log'))).toBe(true);
+    const v = await t.svc.execute(site, t.conn, p, approve(p.planHash));
+    expect(v.ok).toBe(true);
+    const f = (q: string) => t.conn.files.get(t.conn.resolve(q))?.toString();
+    expect(f('index.php')).toBe('<?php // restored index');
+    expect(f('wp-config.php')).toBe('<?php // secrets');
+    expect(f('wp-content/uploads/2026/a.jpg')).toBe('jpeg');
+    expect(f('cache/x')).toBe('cached');
+    expect(f('wp-content/plugins/foo/foo.php')).toBeUndefined();
+  });
+
+  it('keeps a top-level agent file in place and refuses when the agent is nested in wp-content', async () => {
+    const t = setup();
+    const fileAgent = {
+      ...site,
+      transport: { ...site.transport, endpoint: 'https://example.com/auto-wp-agent.php' },
+    };
+    t.conn.seed({ 'auto-wp-agent.php': 'agent' });
+    const p = await t.svc.plan(fileAgent as typeof site, t.conn, ID, 'files');
+    await t.svc.execute(fileAgent as typeof site, t.conn, p, approve(p.planHash));
+    expect(t.conn.files.get(t.conn.resolve('auto-wp-agent.php'))?.toString()).toBe('agent');
+
+    const nested = {
+      ...site,
+      transport: { ...site.transport, endpoint: 'https://example.com/wp-content/aw/agent.php' },
+    };
+    await expect(t.svc.plan(nested as typeof site, t.conn, ID, 'full')).rejects.toThrow(/wp-content\/aw/);
+    expect((await t.svc.plan(nested as typeof site, t.conn, ID, 'db')).steps).toBeDefined();
   });
 });
 
