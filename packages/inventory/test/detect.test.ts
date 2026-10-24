@@ -5,6 +5,9 @@ import checkUpdate from './fixtures/wp-core-check-update.json' with { type: 'jso
 import inventory from './fixtures/wp-inventory.json' with { type: 'json' };
 import pluginList from './fixtures/wp-plugin-list.json' with { type: 'json' };
 import themeList from './fixtures/wp-theme-list.json' with { type: 'json' };
+import transientCore from './fixtures/wp-transient-core.json' with { type: 'json' };
+import transientPlugins from './fixtures/wp-transient-plugins.json' with { type: 'json' };
+import transientThemes from './fixtures/wp-transient-themes.json' with { type: 'json' };
 import { subcommand, WP_BIN, wpCliSite } from './helpers.js';
 
 const service = () => new DefaultInventoryService(new MemoryLogger());
@@ -14,7 +17,10 @@ const cliReplies = {
   'core version': { stdout: '6.6.2\n' },
   'core check-update': { stdout: json(checkUpdate) },
   'plugin list': { stdout: json(pluginList) },
+  'option get _site_transient_update_core': { stdout: json(transientCore) },
+  'option get _site_transient_update_plugins': { stdout: json(transientPlugins) },
   'theme list': { stdout: json(themeList) },
+  'option get _site_transient_update_themes': { stdout: json(transientThemes) },
   'theme get hello-elementor-child': { stdout: 'hello-elementor\n' },
   'theme get hello-elementor': { stdout: 'hello-elementor\n' },
   'theme get twentytwentyfour': { exitCode: 1 },
@@ -65,7 +71,7 @@ describe('DefaultInventoryService.detect via WP-CLI', () => {
     expect(slugs).not.toContain('storefront');
   });
 
-  it('runs argv only with --path and --no-color', async () => {
+  it('runs argv only with --path, --no-color and read-only skip flags', async () => {
     const c = wpCliSite(cliReplies);
     await service().detect(c);
     const execs = c.ops.filter((o) => o.op === 'exec').map((o) => (o.args as { argv: string[] }).argv);
@@ -74,12 +80,17 @@ describe('DefaultInventoryService.detect via WP-CLI', () => {
       expect(argv[0]).toBe(WP_BIN);
       expect(argv).toContain('--path=/var/www/html');
       expect(argv).toContain('--no-color');
+      expect(argv).toContain('--skip-plugins');
+      expect(argv).toContain('--skip-themes');
     }
     expect(execs.map(subcommand)).toEqual([
       'core version',
       'core check-update',
+      'option get _site_transient_update_core',
       'plugin list',
+      'option get _site_transient_update_plugins',
       'theme list',
+      'option get _site_transient_update_themes',
       'theme get twentytwentyfour',
       'theme get hello-elementor',
       'theme get hello-elementor-child',
@@ -96,9 +107,13 @@ describe('DefaultInventoryService.detect via WP-CLI', () => {
     expect(items.some((i) => i.type === 'core')).toBe(false);
   });
 
-  it('fails when core check-update exits non-zero', async () => {
+  it('falls back to the agent when a WP-CLI call fails', async () => {
     const replies = { ...cliReplies, 'core check-update': { exitCode: 1 } };
-    await expect(service().detect(wpCliSite(replies))).rejects.toThrow(/core check-update failed/);
+    const c = wpCliSite(replies);
+    c.onCall('wp.inventory', () => inventory);
+    const items = await service().detect(c);
+    expect(c.ops.map((o) => o.op)).toContain('call:wp.inventory');
+    expect(items.map((i) => i.slug)).toContain('woocommerce');
   });
 
   it.each(['--ssh-option', '.', '..', 'a/b'])('rejects unsafe slug %s', async (name) => {

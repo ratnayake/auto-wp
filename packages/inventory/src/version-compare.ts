@@ -60,12 +60,19 @@ export function canonicalize(version: string): string {
   return out;
 }
 
+// PHP reads numeric segments with strtol(), which saturates at LONG_MAX instead of overflowing.
+const LONG_MAX = 9223372036854775807n;
+const strtol = (token: string): bigint => {
+  const n = BigInt(/^\d*/.exec(token)?.[0] || '0');
+  return n > LONG_MAX ? LONG_MAX : n;
+};
+
 function compareToken(a: string, b: string): Sign {
   const digitA = isDigit(a.charAt(0));
   const digitB = isDigit(b.charAt(0));
   if (digitA && digitB) {
-    const x = BigInt(/^\d*/.exec(a)?.[0] ?? '0');
-    const y = BigInt(/^\d*/.exec(b)?.[0] ?? '0');
+    const x = strtol(a);
+    const y = strtol(b);
     return x < y ? -1 : x > y ? 1 : 0;
   }
   if (!digitA && !digitB) return compareSpecial(a, b);

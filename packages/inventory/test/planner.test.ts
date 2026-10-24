@@ -7,7 +7,8 @@ import { buildItem, type InventoryItem } from '../src/item.js';
 const caps = { ...DEFAULT_FAKE_CAPS, phpVersion: '8.2.0' };
 const policy = (over: Partial<Policy> = {}): Policy => PolicySchema.parse(over);
 const planner = new DefaultInventoryService(new MemoryLogger());
-const plan = (items: InventoryItem[], p: Policy = policy()) => planner.plan(items, caps, p);
+const plan = (items: InventoryItem[], p: Policy = policy(), installed?: string) =>
+  planner.plan(items, caps, p, installed);
 
 type Over = Partial<InventoryItem>;
 const plugin = (slug: string, over: Over = {}): InventoryItem =>
@@ -151,6 +152,12 @@ describe('holds', () => {
       theme('t'),
     ]);
     expect(keys(out)).toEqual(['plugin:old-req', 'theme:t', 'core:wordpress', 'plugin:new-req']);
+  });
+
+  it('allows requiresWp equal to the planned core, placed after core minor', () => {
+    const out = plan([plugin('exact', { requiresWp: '6.6.2' }), core('6.6.1', '6.6.2')]);
+    expect(keys(out)).toEqual(['core:wordpress', 'plugin:exact']);
+    expect(out.every((i) => i.heldReason === undefined)).toBe(true);
   });
 
   it('holds items needing the new core when the core update itself is held', () => {
