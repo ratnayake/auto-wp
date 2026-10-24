@@ -1,0 +1,100 @@
+{
+  "core": {
+    "version": "6.6.2",
+    "locale": "en_US",
+    "update": {
+      "version": "6.7",
+      "requiresPhp": "7.4",
+      "package": "https://downloads.wordpress.org/release/wordpress-6.7.zip"
+    }
+  },
+  "plugins": [
+    {
+      "slug": "akismet",
+      "file": "akismet/akismet.php",
+      "name": "Akismet Anti-Spam",
+      "version": "5.3.5",
+      "active": true,
+      "networkActive": false,
+      "requiresPlugins": [],
+      "update": {
+        "version": "5.4",
+        "package": "https://downloads.wordpress.org/plugin/akismet.5.4.zip"
+      }
+    },
+    {
+      "slug": "acf-pro",
+      "file": "advanced-custom-fields-pro/acf.php",
+      "name": "Advanced Custom Fields PRO",
+      "version": "6.2.0",
+      "active": true,
+      "networkActive": false,
+      "updateUri": "false",
+      "requiresPlugins": [],
+      "update": {
+        "version": "6.3.0"
+      }
+    },
+    {
+      "slug": "gravityforms-addon",
+      "file": "gravityforms-addon/addon.php",
+      "name": "Gravity Forms Add-on",
+      "version": "2.1.0",
+      "active": true,
+      "networkActive": false,
+      "requiresPlugins": ["gravityforms"],
+      "update": {
+        "version": "2.2.0",
+        "requiresWp": "6.5",
+        "package": "https://example-vendor.test/downloads/addon-2.2.0.zip"
+      }
+    },
+    {
+      "slug": "woocommerce",
+      "file": "woocommerce/woocommerce.php",
+      "name": "WooCommerce",
+      "version": "9.2.3",
+      "active": true,
+      "networkActive": false,
+      "requiresPlugins": [],
+      "update": {
+        "version": "10.0.0",
+        "requiresWp": "6.7",
+        "requiresPhp": "7.4",
+        "package": "https://downloads.wordpress.org/plugin/woocommerce.10.0.0.zip"
+      }
+    },
+    {
+      "slug": "hello",
+      "file": "hello/hello.php",
+      "name": "Hello Dolly",
+      "version": "1.7.2",
+      "active": false,
+      "networkActive": false,
+      "requiresPlugins": []
+    }
+  ],
+  "themes": [
+    {
+      "slug": "hello-elementor",
+      "name": "Hello Elementor",
+      "version": "3.0.0",
+      "active": true,
+      "update": {
+        "version": "4.0.0",
+        "package": "https://downloads.wordpress.org/theme/hello-elementor.4.0.0.zip"
+      }
+    },
+    {
+      "slug": "hello-elementor-child",
+      "name": "Hello Elementor Child",
+      "version": "1.0.0",
+      "active": false,
+      "parent": "hello-elementor",
+      "update": { "version": "1.0.1" }
+    }
+  ],
+  "mustUse": [{ "file": "mu-plugins/site-helper.php", "name": "Site Helper", "version": "1.0.0" }],
+  "php": "8.2.0",
+  "db": "MariaDB 10.11.6"
+}
