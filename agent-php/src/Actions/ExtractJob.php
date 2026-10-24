@@ -19,7 +19,10 @@ use AutoWp\Agent\Security\PathJail;
  * - nothing is ever written through a symlink; symlinked parent dirs must resolve inside destDir (or,
  *   when they pre-date the extraction, inside the jail); every target is re-checked after realpath;
  * - files are written to a temporary sibling and renamed into place when complete;
- * - symlink entries are only created when their target stays inside destDir; hard links are copied;
+ * - symlink and hard-link entries are skipped (and counted in `skippedLinks`) unless the config sets
+ *   `extractLinks`; then links are created last and every one that resolves outside destDir or into an
+ *   agent-reserved path is removed; hard links are copied from inside destDir only;
+ * - modes are masked with 0755 (no setuid/setgid/sticky, nothing group/world-writable);
  * - agent-reserved paths are skipped; setuid/setgid/sticky bits are dropped.
  */
 final class ExtractJob implements JobHandler
@@ -45,7 +48,9 @@ final class ExtractJob implements JobHandler
             'fileCount' => 0,
             'entries' => 0,
             'size' => (int) filesize($archive),
-            'links' => [],
+            'delayed' => [],
+            'skippedLinks' => 0,
+            'allowLinks' => $ctx->config->extractLinks,
         ];
     }
 
@@ -79,7 +84,8 @@ final class ExtractJob implements JobHandler
                         // Drain the rest so a corrupt gzip trailer is still noticed.
                         while ($src->read(65536) !== '') {
                         }
-                        return ['fileCount' => $state['fileCount']];
+                        $this->createDelayedLinks($state, $ctx);
+                        return ['fileCount' => $state['fileCount'], 'skippedLinks' => $state['skippedLinks']];
                     }
                     $state['entries']++;
                     $this->handleEntry($state, $ctx, $tar, $e);
@@ -148,7 +154,7 @@ final class ExtractJob implements JobHandler
                 if (!is_dir($target) && !@mkdir($target, 0755) && !is_dir($target)) {
                     throw AgentException::internal('cannot create directory ' . $rel);
                 }
-                @chmod($target, ($e['mode'] & 0777) | 0700);
+                @chmod($target, ($e['mode'] & 0755) | 0700);
                 return;
             case '0':
                 if ($exists) {
@@ -167,7 +173,7 @@ final class ExtractJob implements JobHandler
                     'abs' => $target,
                     'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
                     'off' => 0,
-                    'mode' => $e['mode'] & 0777,
+                    'mode' => $e['mode'] & 0755, // never world/group-writable, never setuid
                     'mtime' => $e['mtime'],
                     'remaining' => $e['size'],
                     'padding' => 0,
@@ -180,39 +186,48 @@ final class ExtractJob implements JobHandler
                 }
                 return;
             case '2':
-                if (!self::linkStaysInside($rel, $e['link']) || !self::resolvesInside(dirname($target) . '/' . $e['link'], $dest)) {
-                    $ctx->audit->record('extract.skip_symlink', ['entry' => substr($rel, 0, 200)]);
+                // Links are refused unless the operator enabled them (config extractLinks). Even then
+                // they are created only after every other entry (like GNU tar's delayed links) and
+                // re-validated as a set, so a later entry cannot change what an earlier link means.
+                if (!$state['allowLinks'] || !self::linkStaysInside($rel, $e['link']) || count($state['delayed']) >= 100000) {
+                    $state['skippedLinks']++;
+                    $ctx->audit->record('extract.skip_link', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
-                if ($exists) {
-                    if (!$state['overwrite'] || (is_dir($target) && !is_link($target))) {
-                        return;
-                    }
-                    @unlink($target);
+                if ($exists && (!$state['overwrite'] || (is_dir($target) && !is_link($target)))) {
+                    return;
                 }
-                if (@symlink($e['link'], $target)) {
-                    $state['fileCount']++;
-                    if (count($state['links']) < 100000) {
-                        $state['links'][] = $target;
-                    }
-                }
+                $state['delayed'][] = [$target, $e['link']];
                 return;
             case '1':
-                try {
-                    $linkRel = PathJail::safeRelative($e['link']);
-                } catch (AgentException $ex) {
+                $from = false;
+                if ($state['allowLinks']) {
+                    try {
+                        $from = realpath($dest . '/' . PathJail::safeRelative($e['link']));
+                    } catch (AgentException $ex) {
+                        $from = false;
+                    }
+                }
+                if ($from === false || !PathJail::isInside($from, $dest) || $ctx->jail->isForbidden($from)
+                    || !$ctx->jail->isWithinRoots($from) || !is_file($from)) {
+                    $state['skippedLinks']++;
+                    $ctx->audit->record('extract.skip_link', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
-                $from = realpath($dest . '/' . $linkRel);
-                if ($from === false || !PathJail::isInside($from, $dest) || !is_file($from) || ($exists && !$state['overwrite'])) {
+                if ($exists && (!$state['overwrite'] || (is_dir($target) && !is_link($target)))) {
                     return;
                 }
-                if (is_link($target)) {
-                    @unlink($target);
+                // Copy to a temporary sibling and rename into place (never into a shared inode).
+                $cur = ['abs' => $target, 'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
+                    'mode' => $e['mode'] & 0755, 'mtime' => $e['mtime']];
+                if (is_link($cur['tmp'])) {
+                    @unlink($cur['tmp']);
                 }
-                if (@copy($from, $target)) {
-                    $state['fileCount']++;
+                if (!@copy($from, $cur['tmp'])) {
+                    throw AgentException::internal('cannot copy hard-linked entry ' . $rel);
                 }
+                $this->finishFile($cur);
+                $state['fileCount']++;
                 return;
             default:
                 return; // devices, fifos, sparse and vendor types are skipped
@@ -230,13 +245,10 @@ final class ExtractJob implements JobHandler
         foreach ($segs as $seg) {
             $cur .= '/' . $seg;
             if (is_link($cur)) {
-                // A symlinked directory is traversed only when it resolves inside destDir, or, for a
-                // symlink that existed before this extraction (e.g. a relocated uploads dir), inside
-                // the allowed roots. Links created from the archive itself never lead outside destDir.
+                // A symlinked directory is traversed only when it resolves inside destDir and not into
+                // an agent-reserved path; anything else aborts the extraction.
                 $real = realpath($cur);
-                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real)
-                    && (PathJail::isInside($real, $dest)
-                        || (!in_array($cur, $state['links'], true) && $ctx->jail->isWithinRoots($real)));
+                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real) && PathJail::isInside($real, $dest);
                 if (!$ok) {
                     throw AgentException::jail('archive entry would be written through a symlink');
                 }
@@ -276,6 +288,47 @@ final class ExtractJob implements JobHandler
             $parts[] = $seg;
         }
         return true;
+    }
+
+    /**
+     * Creates the deferred symlinks, then removes every created link that resolves outside destDir,
+     * into an agent-reserved path, or nowhere, until the set is stable.
+     *
+     * @param array<string, mixed> $state
+     */
+    private function createDelayedLinks(array &$state, Context $ctx): void
+    {
+        $created = [];
+        foreach ($state['delayed'] as [$target, $link]) {
+            $parent = realpath(dirname($target));
+            if ($parent === false || !PathJail::isInside($parent, $state['dest']) || $ctx->jail->isForbidden($parent)) {
+                $state['skippedLinks']++;
+                continue;
+            }
+            if (is_link($target) || is_file($target)) {
+                @unlink($target);
+            }
+            if (!file_exists($target) && @symlink($link, $target)) {
+                $created[] = $target;
+            } else {
+                $state['skippedLinks']++;
+            }
+        }
+        $state['delayed'] = [];
+        do {
+            $removed = false;
+            foreach ($created as $i => $target) {
+                $real = realpath($target);
+                if ($real === false || !PathJail::isInside($real, $state['dest']) || $ctx->jail->isForbidden($real)
+                    || !$ctx->jail->isWithinRoots($real)) {
+                    @unlink($target);
+                    unset($created[$i]);
+                    $state['skippedLinks']++;
+                    $removed = true;
+                }
+            }
+        } while ($removed);
+        $state['fileCount'] += count($created);
     }
 
     /**

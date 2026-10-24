@@ -120,12 +120,15 @@ final class Agent
             $this->ctx->clock
         );
         try {
+            if (!$this->isHttps($server)) {
+                throw new AuthFailure('insecure_transport');
+            }
             if ($body === null) {
                 throw new AuthFailure('body_too_large');
             }
             $keyId = $verifier->verify($method, $path, $headers, $body, $ip);
         } catch (AuthFailure $e) {
-            $this->ctx->audit->record('auth_failed', ['ip' => $ip, 'reason' => $e->getReason()]);
+            $this->ctx->authAudit()->recordThrottled('auth_failed', $ip . '|' . $e->getReason(), ['ip' => substr($ip, 0, 64), 'reason' => $e->getReason()]);
             return [404, ''];
         }
 
@@ -234,6 +237,23 @@ final class Agent
         }
         $err = is_array($r['error'] ?? null) ? $r['error'] : [];
         throw new AgentException((string) ($err['code'] ?? 'wp_fatal'), (string) ($err['message'] ?? 'WordPress bridge failed'));
+    }
+
+    /** @param array<string, mixed> $server */
+    private function isHttps(array $server): bool
+    {
+        $cfg = $this->ctx->config;
+        if ($cfg->allowInsecureHttp) {
+            return true;
+        }
+        $https = strtolower((string) ($server['HTTPS'] ?? ''));
+        if ($https !== '' && $https !== 'off') {
+            return true;
+        }
+        if ((string) ($server['REQUEST_SCHEME'] ?? '') === 'https') {
+            return true;
+        }
+        return $cfg->trustForwardedProto && strtolower((string) ($server['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
     }
 
     public static function safeMessage(\Throwable $e): string

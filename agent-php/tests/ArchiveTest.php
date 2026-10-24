@@ -120,6 +120,7 @@ final class ArchiveTest extends TestCase
             'wpRoot' => $s['wp'],
             'dataDir' => $s['root'] . '/data',
             'outsideDocrootDir' => $s['root'],
+            'extractLinks' => true,
         ]);
         return new Context($cfg, Context::MODE_WEB, 'time', $s['wp'] . '/auto-wp-agent/agent.php');
     }
@@ -141,7 +142,8 @@ final class ArchiveTest extends TestCase
         $x = (new ExtractJob());
         $st = $x->init(['archive' => $s['root'] . '/bin.tar.gz', 'destDir' => $s['root'] . '/x', 'overwrite' => true], $ctx);
         $r = $x->step($st, $ctx, INF);
-        self::assertSame($res['fileCount'], $r['fileCount']);
+        self::assertSame($res['fileCount'], $r['fileCount'] + $r['skippedLinks'], 'symlinks are skipped by default');
+        self::assertSame(1, $r['skippedLinks']);
         self::assertFileExists($s['root'] . '/x/-starts-with-dash.txt');
         self::assertFileDoesNotExist($s['root'] . '/x/auto-wp-backup/old/db.sql.gz');
     }
@@ -226,7 +228,8 @@ final class ArchiveTest extends TestCase
         self::assertSame('keep me too', file_get_contents($s['wp'] . '/r/debug.log'));
         self::assertSame($files['wp-content/cache/page.html'], file_get_contents($s['wp'] . '/r/cache/page.html'));
         self::assertSame([], glob($s['wp'] . '/r/{,*/,*/*/}.*.autowp-part', GLOB_BRACE));
-        self::assertGreaterThan(3, $x['fileCount']);
+        self::assertSame(3, $x['fileCount']);
+        self::assertSame(1, $x['skippedLinks']);
     }
 
     public function testTruncatedAndCorruptArchivesFailTest(): void

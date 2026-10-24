@@ -33,6 +33,8 @@ final class Context
     public $agentFile;
     /** @var Connection|null */
     private $db;
+    /** @var AuditLog|null */
+    private $authAudit;
 
     public function __construct(Config $config, string $mode, callable $clock, string $agentFile)
     {
@@ -43,6 +45,7 @@ final class Context
         $this->data = new DataDir($config->dataDir);
         $this->data->ensure();
         $this->audit = new AuditLog($this->data->path('audit.log.php'), $clock);
+        $this->gcTmp();
         $this->binaries = new Binaries();
         $roots = [$config->wpRoot];
         if ($config->outsideDocrootDir !== null) {
@@ -61,6 +64,15 @@ final class Context
         $this->jail = new PathJail($config->wpRoot, $roots, $forbidden);
     }
 
+    /** Separate, throttled log for unauthenticated requests (keeps the main trail intact). */
+    public function authAudit(): AuditLog
+    {
+        if ($this->authAudit === null) {
+            $this->authAudit = new AuditLog($this->data->path('auth-failures.log.php'), $this->clock);
+        }
+        return $this->authAudit;
+    }
+
     public function now(): int
     {
         return ($this->clock)();
@@ -71,11 +83,33 @@ final class Context
         return $this->mode === self::MODE_CLI;
     }
 
+    /** Removes stale temp files (e.g. a mysqldump defaults file left by a killed process). */
+    private function gcTmp(): void
+    {
+        $dir = $this->data->path('tmp');
+        if (!is_dir($dir)) {
+            return;
+        }
+        $cutoff = time() - 3600;
+        foreach (glob($dir . '/*') ?: [] as $f) {
+            $m = @filemtime($f);
+            if ($m !== false && ($m < $cutoff || (strpos(PathJail::baseName($f), 'my-') === 0 && $m < time() - 600))) {
+                @unlink($f);
+            }
+        }
+    }
+
     /** Whether external binaries may be used for long-running work in this mode. */
     public function mayUseBinaries(): bool
     {
         return $this->config->useBinaries && $this->binaries->execEnabled()
             && ($this->isCli() || $this->config->webUseBinaries);
+    }
+
+    /** Injects a connection (tests). */
+    public function useDb(Connection $db): void
+    {
+        $this->db = $db;
     }
 
     public function db(): Connection

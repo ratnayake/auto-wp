@@ -37,6 +37,12 @@ final class Config
     public $webUseBinaries = false;
     /** @var bool Master switch for tar/mysqldump (false = always use the native implementations). */
     public $useBinaries = true;
+    /** @var bool fs.extract creates symlink/hard-link entries (validated) instead of skipping them. */
+    public $extractLinks = false;
+    /** @var bool Accept web requests over plain HTTP (otherwise HTTPS is required). */
+    public $allowInsecureHttp = false;
+    /** @var bool Treat `X-Forwarded-Proto: https` as HTTPS (only behind a trusted proxy). */
+    public $trustForwardedProto = false;
     /** @var string|null HTTP_HOST to present to WordPress in CLI bridge mode. */
     public $siteHost;
     /** @var string|null Path of the config file this was loaded from. */
@@ -127,6 +133,9 @@ final class Config
         }
         $c->webUseBinaries = (bool) ($a['webUseBinaries'] ?? false);
         $c->useBinaries = (bool) ($a['useBinaries'] ?? true);
+        $c->extractLinks = (bool) ($a['extractLinks'] ?? false);
+        $c->allowInsecureHttp = (bool) ($a['allowInsecureHttp'] ?? false);
+        $c->trustForwardedProto = (bool) ($a['trustForwardedProto'] ?? false);
         $host = self::str($a, 'siteHost', '');
         $c->siteHost = $host !== '' ? $host : null;
         return $c;

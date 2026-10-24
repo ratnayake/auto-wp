@@ -34,7 +34,8 @@ final class IpMatcher
                 if ($netBin !== false && strlen($netBin) === 4 && strlen($addr) === 16
                     && substr($addr, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
                     $addr4 = substr($addr, 12);
-                    if (self::prefixMatch($addr4, $netBin, $bits ?? 32)) {
+                    $b4 = $bits ?? 32;
+                    if ($b4 >= 0 && $b4 <= 32 && self::prefixMatch($addr4, $netBin, $b4)) {
                         return true;
                     }
                 }

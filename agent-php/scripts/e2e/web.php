@@ -25,12 +25,13 @@ function check(bool $c, string $msg): void
 exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg("$agentPhp/bin/install.php") . ' --docroot ' . escapeshellarg($docroot)
     . ' --site-id site-agent --key-id ' . escapeshellarg($vectors['keyId'])
     . ' --ed25519-public-key ' . escapeshellarg($vectors['ed25519']['publicKeyB64'])
-    . ' --allow-ip 127.0.0.1 --allow-ip ::1 --expires-at ' . (time() + 3600) . ' 2>&1', $out, $rc);
+    . ' --allow-ip 127.0.0.1 --allow-ip ::1 --allow-insecure-http --expires-at ' . (time() + 3600) . ' 2>&1', $out, $rc);
 echo implode("\n", $out), "\n";
 check($rc === 0, 'installer succeeded');
 check(hash_file('sha256', "$docroot/auto-wp-agent/agent.php") === hash_file('sha256', "$agentPhp/dist/agent.php"), 'deployed agent matches dist');
 check(is_dir("$base/.auto-wp-agent-data"), 'data dir created outside the docroot');
 check(strpos((string) file_get_contents("$docroot/auto-wp-agent/.htaccess"), 'Require all denied') !== false, '.htaccess written');
+check(strpos((string) file_get_contents("$docroot/auto-wp-agent/config.php"), 'publicKey') === false, 'docroot config.php is only a pointer; keys live in the data dir');
 
 $server = proc_open([PHP_BINARY, '-S', "127.0.0.1:$port", '-t', $docroot], [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', "$base/server.log", 'w']], $pipes);
 register_shutdown_function(static function () use ($server): void {
@@ -122,7 +123,14 @@ check($st === 200 && ($env['error']['code'] ?? '') === 'wp_fatal', 'broken WordP
 $env = json_decode(post($port, $path, $body, $h)[1], true);
 check(($env['ok'] ?? false) === true, 'cache.flush tolerates broken WordPress');
 
-$audit = (string) file_get_contents("$base/.auto-wp-agent-data/audit.log.php");
+$audit = (string) file_get_contents("$base/.auto-wp-agent-data/auth-failures.log.php")
+    . (string) file_get_contents("$base/.auto-wp-agent-data/audit.log.php");
 check(strpos($audit, '"reason":"replay"') !== false && strpos($audit, '"reason":"bad_signature"') !== false, 'auth failures are audited');
 check(strpos($audit, 'Signature') === false, 'audit log holds no signatures');
+// HTTPS is required unless the config allows plain HTTP.
+$cfgFile = "$base/.auto-wp-agent-data/config.php";
+file_put_contents($cfgFile, str_replace("'allowInsecureHttp' => true", "'allowInsecureHttp' => false", (string) file_get_contents($cfgFile)));
+[$body, $h] = $signed(['action' => 'probe', 'params' => new stdClass()]);
+[$st, $resp] = post($port, $path, $body, $h);
+check($st === 404 && $resp === '', 'plain HTTP without allowInsecureHttp -> 404');
 echo "ALL OK\n";

@@ -16,8 +16,9 @@ use AutoWp\Agent\Jobs\JobHandler;
 /**
  * db.import: streams a (gzipped) SQL file through SqlSplitter and executes it statement by statement.
  * Resumes at the end of the last executed statement; session `SET` statements seen so far are replayed
- * on each new connection. `USE` and `CREATE/DROP DATABASE` are skipped so a dump can only ever touch the
- * site's own database.
+ * on each new connection. Leading `USE` and `CREATE/DROP DATABASE` statements are skipped; cross-database
+ * references inside statements are only limited by the DB user's grants. Dumps that switch sql_mode to
+ * NO_BACKSLASH_ESCAPES or ANSI_QUOTES are refused.
  */
 final class ImportJob implements JobHandler
 {
@@ -51,6 +52,15 @@ final class ImportJob implements JobHandler
         $db = $ctx->db();
         if ($this->prepared !== $db) {
             $db->exec('SET NAMES utf8mb4');
+            // SqlSplitter lexes strings the default way; these modes would make the server lex them
+            // differently (statement injection from row data), so they are cleared and then policed.
+            $rows = $db->fetchAll('SELECT @@SESSION.sql_mode AS m');
+            $modes = array_filter(explode(',', strtoupper((string) ($rows[0]['m'] ?? ''))), static function (string $m): bool {
+                return $m !== '' && !in_array($m, ['NO_BACKSLASH_ESCAPES', 'ANSI_QUOTES', 'ANSI'], true);
+            });
+            $db->exec("SET SESSION sql_mode = '" . implode(',', array_map(static function (string $m): string {
+                return (string) preg_replace('/[^A-Z0-9_]/', '', $m);
+            }, $modes)) . "'");
             foreach ($state['replay'] as $sql) {
                 try {
                     $db->exec($sql);
@@ -58,6 +68,7 @@ final class ImportJob implements JobHandler
                     // Best effort: a SET that depended on an earlier user variable may not replay.
                 }
             }
+            self::assertLexerCompatible($db);
             $this->prepared = $db;
         }
         $reader = $state['gzip'] ? new GzipReader($state['source'], $state['pos']) : new PlainReader($state['source'], $state['pos']);
@@ -101,12 +112,28 @@ final class ImportJob implements JobHandler
             throw AgentException::internal('statement ' . ($state['statements'] + 1) . ' failed: ' . substr($e->getMessage(), 0, 300));
         }
         $state['statements']++;
+        if (preg_match('/^(INSERT|REPLACE)\b/i', $head) !== 1) {
+            // Anything but plain data rows might have changed sql_mode (SET, PREPARE/EXECUTE, ...).
+            self::assertLexerCompatible($db);
+        }
         if (preg_match('/^SET\s/i', $head) === 1 && strlen($sql) < 1024) {
             $replay = array_values(array_filter($state['replay'], static function (string $s) use ($sql): bool {
                 return $s !== $sql;
             }));
             $replay[] = $sql;
             $state['replay'] = array_slice($replay, -self::MAX_REPLAY);
+        }
+    }
+
+    /** Refuses to go on when the session would lex quotes differently from SqlSplitter. */
+    public static function assertLexerCompatible(Connection $db): void
+    {
+        $rows = $db->fetchAll('SELECT @@SESSION.sql_mode AS m');
+        $mode = strtoupper((string) ($rows[0]['m'] ?? ''));
+        foreach (['NO_BACKSLASH_ESCAPES', 'ANSI_QUOTES'] as $bad) {
+            if (strpos($mode, $bad) !== false) {
+                throw AgentException::invalidParams('the dump enables sql_mode ' . $bad . ', which db.import refuses (statement splitting would be unsafe)');
+            }
         }
     }
 

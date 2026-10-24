@@ -100,7 +100,7 @@ if ($cli->mayUseBinaries() && $cli->binaries->find('mysqldump') !== null) {
     $r = (new JobRunner($cli, ['db.dump' => new DumpJob()]))->start('db.dump', ['dest' => 'auto-wp-backup/md.sql.gz', 'excludeTables' => ['nopk']]);
     check($r['result']['method'] === 'mysqldump', 'mysqldump method');
     check(!in_array('nopk', array_column($r['result']['tables'], 'name'), true), 'excludeTables honoured');
-    check(glob("$work/data-src/tmp/my-*") === [], 'defaults-extra-file removed');
+    check(glob("$work/data-src/tmp/*") === [], "no credential or temp files left in tmp/");
     $sql2 = (string) file_get_contents("compress.zlib://$work/src/auto-wp-backup/md.sql.gz");
     check(substr(rtrim($sql2), -40) !== '' && preg_match('/-- Dump completed \S+Z\n$/', $sql2) === 1, 'mysqldump output ends with marker');
     check(strpos($sql2, "pa'ss") === false, 'no password in output');

@@ -7,6 +7,10 @@
 //       (--ed25519-public-key <base64> | --hmac-key-file <path>) [--wp-root <path>] \
 //       [--allow-ip 203.0.113.7 ...] [--expires-at 2026-12-31T00:00:00Z] [--data-dir <path>] \
 //       [--outside-docroot-dir <path>] [--agent <path to agent.php>] [--config-mode 0640] [--force]
+//       [--allow-data-in-docroot] [--allow-insecure-http] [--trust-forwarded-proto] [--extract-links]
+//
+// The real config (with keys) is written into the private data dir; <agent dir>/config.php only
+// points at it. The data dir must be outside the docroot unless --allow-data-in-docroot is given.
 //
 // Secrets are never taken from argv: the HMAC key is read from a file (or "-" for stdin).
 declare(strict_types=1);
@@ -22,8 +26,21 @@ function fail(string $msg): void
     exit(1);
 }
 
+/** Writes a file (atomically, with the given mode) or aborts. */
+function put(string $path, string $content, int $mode = 0644): void
+{
+    $tmp = $path . '.tmp-' . bin2hex(random_bytes(4));
+    $old = umask(0077);
+    $ok = file_put_contents($tmp, $content) === strlen($content);
+    umask($old);
+    if (!$ok || !chmod($tmp, $mode) || !rename($tmp, $path)) {
+        @unlink($tmp);
+        fail("cannot write $path");
+    }
+}
+
 $opts = ['allow-ip' => []];
-$flags = ['force'];
+$flags = ['force', 'allow-data-in-docroot', 'allow-insecure-http', 'trust-forwarded-proto', 'extract-links'];
 for ($i = 1; $i < count($argv); $i++) {
     $a = $argv[$i];
     if (strncmp($a, '--', 2) !== 0) {
@@ -119,15 +136,19 @@ if (!is_dir($dataDir) && !mkdir($dataDir, 0700, true)) {
 }
 umask($old);
 $dataDir = (string) realpath($dataDir);
+$dataInDocroot = strncmp($dataDir . '/', $docroot . '/', strlen($docroot) + 1) === 0;
+if ($dataInDocroot && !isset($opts['allow-data-in-docroot'])) {
+    fail("data dir $dataDir is inside the docroot; pass --data-dir outside it, or --allow-data-in-docroot");
+}
 $denyHtaccess = "# auto-wp agent data: never web-accessible\n<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n"
     . "<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n</IfModule>\n";
 $denyWebConfig = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n  <system.webServer>\n    <security>\n"
     . "      <authorization>\n        <remove users=\"*\" roles=\"\" verbs=\"\" />\n        <add accessType=\"Deny\" users=\"*\" />\n"
     . "      </authorization>\n    </security>\n  </system.webServer>\n</configuration>\n";
-if (strncmp($dataDir . '/', $docroot . '/', strlen($docroot) + 1) === 0) {
-    file_put_contents($dataDir . '/.htaccess', $denyHtaccess);
-    file_put_contents($dataDir . '/web.config', $denyWebConfig);
-    file_put_contents($dataDir . '/index.php', "<?php http_response_code(404);\n");
+if ($dataInDocroot) {
+    put($dataDir . '/.htaccess', $denyHtaccess);
+    put($dataDir . '/web.config', $denyWebConfig);
+    put($dataDir . '/index.php', "<?php http_response_code(404);\n");
     fwrite(STDERR, "warning: data dir is inside the docroot ($dataDir); deny rules written. Verify it returns 403/404 over HTTP.\n");
 }
 
@@ -139,6 +160,9 @@ $config = [
     'keys' => [$opts['key-id'] => $key],
     'ipAllowlist' => array_values($opts['allow-ip']),
     'expires_at' => $expires,
+    'allowInsecureHttp' => isset($opts['allow-insecure-http']),
+    'trustForwardedProto' => isset($opts['trust-forwarded-proto']),
+    'extractLinks' => isset($opts['extract-links']),
 ];
 if (isset($opts['outside-docroot-dir'])) {
     $od = realpath($opts['outside-docroot-dir']);
@@ -150,20 +174,19 @@ if (isset($opts['outside-docroot-dir'])) {
 
 $configPhp = "<?php\n// auto-wp agent configuration (written by bin/install.php)\nreturn " . var_export($config, true) . ";\n";
 $mode = octdec($opts['config-mode'] ?? '0640');
-$tmp = $agentDir . '/config.php.tmp';
-$old = umask(0077);
-file_put_contents($tmp, $configPhp);
-umask($old);
-chmod($tmp, $mode);
-rename($tmp, $agentDir . '/config.php');
+// The secret-bearing config lives in the private data dir; the agent dir only holds a pointer.
+$realConfig = $dataDir . '/config.php';
+put($realConfig, $configPhp, $mode);
+put($agentDir . '/config.php', "<?php\n// auto-wp agent: the configuration lives in the private data dir.\nreturn require " . var_export($realConfig, true) . ";\n", $mode);
 
-copy($agentSrc, $agentDir . '/agent.php');
-chmod($agentDir . '/agent.php', 0644);
-file_put_contents($agentDir . '/index.php', "<?php http_response_code(404);\n");
-file_put_contents($agentDir . '/.htaccess', "# auto-wp agent: deny everything except the entry points\n"
+if (!copy($agentSrc, $agentDir . '/agent.php.tmp') || !chmod($agentDir . '/agent.php.tmp', 0644) || !rename($agentDir . '/agent.php.tmp', $agentDir . '/agent.php')) {
+    fail('cannot install agent.php');
+}
+put($agentDir . '/index.php', "<?php http_response_code(404);\n");
+put($agentDir . '/.htaccess', "# auto-wp agent: deny everything except the entry points\n"
     . "<IfModule mod_authz_core.c>\n  Require all denied\n  <FilesMatch \"^(agent\\.php|index\\.php|web\\.config)$\">\n    Require all granted\n  </FilesMatch>\n</IfModule>\n"
     . "<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n  <FilesMatch \"^(agent\\.php|index\\.php|web\\.config)$\">\n    Order allow,deny\n    Allow from all\n  </FilesMatch>\n</IfModule>\n");
-file_put_contents($agentDir . '/web.config', "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n  <system.webServer>\n"
+put($agentDir . '/web.config', "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration>\n  <system.webServer>\n"
     . "    <directoryBrowse enabled=\"false\" />\n    <security>\n      <requestFiltering>\n"
     . "        <hiddenSegments>\n          <add segment=\"config.php\" />\n          <add segment=\".data\" />\n        </hiddenSegments>\n"
     . "        <fileExtensions allowUnlisted=\"false\">\n          <add fileExtension=\".php\" allowed=\"true\" />\n        </fileExtensions>\n"

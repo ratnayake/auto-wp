@@ -550,15 +550,24 @@ final class DumpJob implements JobHandler
             $state['dump']['tables'][$i]['rows'] = DbInfo::count($db, $t['name']);
         }
         $tmp = $ctx->data->ensure('tmp');
-        $defaults = $tmp . '/my-' . bin2hex(random_bytes(8)) . '.cnf';
-        $errFile = $defaults . '.err';
-        $old = umask(0077);
-        $written = file_put_contents($defaults, self::defaultsFile($cfg));
-        umask($old);
-        if ($written === false) {
-            throw AgentException::internal('cannot write mysqldump defaults file');
+        $errFile = $tmp . '/dump-' . bin2hex(random_bytes(8)) . '.err';
+        // Credentials go through an inherited pipe (/dev/fd/3) where the OS has one, so no file with
+        // the password ever exists. Otherwise: a 0600 file, removed in finally, on shutdown, and by the
+        // tmp GC (Context) should the process be killed.
+        $viaPipe = is_dir('/dev/fd');
+        $defaults = $viaPipe ? '/dev/fd/3' : $tmp . '/my-' . bin2hex(random_bytes(8)) . '.cnf';
+        if (!$viaPipe) {
+            $old = umask(0077);
+            $written = file_put_contents($defaults, self::defaultsFile($cfg));
+            umask($old);
+            if ($written === false) {
+                throw AgentException::internal('cannot write mysqldump defaults file');
+            }
+            @chmod($defaults, 0600);
+            register_shutdown_function(static function () use ($defaults): void {
+                @unlink($defaults);
+            });
         }
-        @chmod($defaults, 0600);
         $gz = null;
         try {
             $argv = ['mysqldump', '--defaults-extra-file=' . $defaults, '--single-transaction', '--quick',
@@ -573,7 +582,15 @@ final class DumpJob implements JobHandler
             }
             $argv[] = $cfg['DB_NAME'];
             $pipes = [];
-            $proc = $ctx->binaries->open($argv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+            $desc = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']];
+            if ($viaPipe) {
+                $desc[3] = ['pipe', 'r'];
+            }
+            $proc = $ctx->binaries->open($argv, $desc, $pipes);
+            if ($viaPipe) {
+                FsUtil::writeAll($pipes[3], self::defaultsFile($cfg));
+                fclose($pipes[3]);
+            }
             $gz = new GzipWriter($state['dest'], 0);
             while (!feof($pipes[1])) {
                 $chunk = fread($pipes[1], 1048576);
@@ -595,7 +612,9 @@ final class DumpJob implements JobHandler
             if ($gz !== null) {
                 $gz->close();
             }
-            @unlink($defaults);
+            if (!$viaPipe) {
+                @unlink($defaults);
+            }
             @unlink($errFile);
         }
         return $this->result($state, 'mysqldump');
@@ -654,7 +673,10 @@ use AutoWp\Agent\Security\PathJail;
  * - nothing is ever written through a symlink; symlinked parent dirs must resolve inside destDir (or,
  *   when they pre-date the extraction, inside the jail); every target is re-checked after realpath;
  * - files are written to a temporary sibling and renamed into place when complete;
- * - symlink entries are only created when their target stays inside destDir; hard links are copied;
+ * - symlink and hard-link entries are skipped (and counted in `skippedLinks`) unless the config sets
+ *   `extractLinks`; then links are created last and every one that resolves outside destDir or into an
+ *   agent-reserved path is removed; hard links are copied from inside destDir only;
+ * - modes are masked with 0755 (no setuid/setgid/sticky, nothing group/world-writable);
  * - agent-reserved paths are skipped; setuid/setgid/sticky bits are dropped.
  */
 final class ExtractJob implements JobHandler
@@ -680,7 +702,9 @@ final class ExtractJob implements JobHandler
             'fileCount' => 0,
             'entries' => 0,
             'size' => (int) filesize($archive),
-            'links' => [],
+            'delayed' => [],
+            'skippedLinks' => 0,
+            'allowLinks' => $ctx->config->extractLinks,
         ];
     }
 
@@ -714,7 +738,8 @@ final class ExtractJob implements JobHandler
                         // Drain the rest so a corrupt gzip trailer is still noticed.
                         while ($src->read(65536) !== '') {
                         }
-                        return ['fileCount' => $state['fileCount']];
+                        $this->createDelayedLinks($state, $ctx);
+                        return ['fileCount' => $state['fileCount'], 'skippedLinks' => $state['skippedLinks']];
                     }
                     $state['entries']++;
                     $this->handleEntry($state, $ctx, $tar, $e);
@@ -783,7 +808,7 @@ final class ExtractJob implements JobHandler
                 if (!is_dir($target) && !@mkdir($target, 0755) && !is_dir($target)) {
                     throw AgentException::internal('cannot create directory ' . $rel);
                 }
-                @chmod($target, ($e['mode'] & 0777) | 0700);
+                @chmod($target, ($e['mode'] & 0755) | 0700);
                 return;
             case '0':
                 if ($exists) {
@@ -802,7 +827,7 @@ final class ExtractJob implements JobHandler
                     'abs' => $target,
                     'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
                     'off' => 0,
-                    'mode' => $e['mode'] & 0777,
+                    'mode' => $e['mode'] & 0755, // never world/group-writable, never setuid
                     'mtime' => $e['mtime'],
                     'remaining' => $e['size'],
                     'padding' => 0,
@@ -815,39 +840,48 @@ final class ExtractJob implements JobHandler
                 }
                 return;
             case '2':
-                if (!self::linkStaysInside($rel, $e['link']) || !self::resolvesInside(dirname($target) . '/' . $e['link'], $dest)) {
-                    $ctx->audit->record('extract.skip_symlink', ['entry' => substr($rel, 0, 200)]);
+                // Links are refused unless the operator enabled them (config extractLinks). Even then
+                // they are created only after every other entry (like GNU tar's delayed links) and
+                // re-validated as a set, so a later entry cannot change what an earlier link means.
+                if (!$state['allowLinks'] || !self::linkStaysInside($rel, $e['link']) || count($state['delayed']) >= 100000) {
+                    $state['skippedLinks']++;
+                    $ctx->audit->record('extract.skip_link', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
-                if ($exists) {
-                    if (!$state['overwrite'] || (is_dir($target) && !is_link($target))) {
-                        return;
-                    }
-                    @unlink($target);
+                if ($exists && (!$state['overwrite'] || (is_dir($target) && !is_link($target)))) {
+                    return;
                 }
-                if (@symlink($e['link'], $target)) {
-                    $state['fileCount']++;
-                    if (count($state['links']) < 100000) {
-                        $state['links'][] = $target;
-                    }
-                }
+                $state['delayed'][] = [$target, $e['link']];
                 return;
             case '1':
-                try {
-                    $linkRel = PathJail::safeRelative($e['link']);
-                } catch (AgentException $ex) {
+                $from = false;
+                if ($state['allowLinks']) {
+                    try {
+                        $from = realpath($dest . '/' . PathJail::safeRelative($e['link']));
+                    } catch (AgentException $ex) {
+                        $from = false;
+                    }
+                }
+                if ($from === false || !PathJail::isInside($from, $dest) || $ctx->jail->isForbidden($from)
+                    || !$ctx->jail->isWithinRoots($from) || !is_file($from)) {
+                    $state['skippedLinks']++;
+                    $ctx->audit->record('extract.skip_link', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
-                $from = realpath($dest . '/' . $linkRel);
-                if ($from === false || !PathJail::isInside($from, $dest) || !is_file($from) || ($exists && !$state['overwrite'])) {
+                if ($exists && (!$state['overwrite'] || (is_dir($target) && !is_link($target)))) {
                     return;
                 }
-                if (is_link($target)) {
-                    @unlink($target);
+                // Copy to a temporary sibling and rename into place (never into a shared inode).
+                $cur = ['abs' => $target, 'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
+                    'mode' => $e['mode'] & 0755, 'mtime' => $e['mtime']];
+                if (is_link($cur['tmp'])) {
+                    @unlink($cur['tmp']);
                 }
-                if (@copy($from, $target)) {
-                    $state['fileCount']++;
+                if (!@copy($from, $cur['tmp'])) {
+                    throw AgentException::internal('cannot copy hard-linked entry ' . $rel);
                 }
+                $this->finishFile($cur);
+                $state['fileCount']++;
                 return;
             default:
                 return; // devices, fifos, sparse and vendor types are skipped
@@ -865,13 +899,10 @@ final class ExtractJob implements JobHandler
         foreach ($segs as $seg) {
             $cur .= '/' . $seg;
             if (is_link($cur)) {
-                // A symlinked directory is traversed only when it resolves inside destDir, or, for a
-                // symlink that existed before this extraction (e.g. a relocated uploads dir), inside
-                // the allowed roots. Links created from the archive itself never lead outside destDir.
+                // A symlinked directory is traversed only when it resolves inside destDir and not into
+                // an agent-reserved path; anything else aborts the extraction.
                 $real = realpath($cur);
-                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real)
-                    && (PathJail::isInside($real, $dest)
-                        || (!in_array($cur, $state['links'], true) && $ctx->jail->isWithinRoots($real)));
+                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real) && PathJail::isInside($real, $dest);
                 if (!$ok) {
                     throw AgentException::jail('archive entry would be written through a symlink');
                 }
@@ -911,6 +942,47 @@ final class ExtractJob implements JobHandler
             $parts[] = $seg;
         }
         return true;
+    }
+
+    /**
+     * Creates the deferred symlinks, then removes every created link that resolves outside destDir,
+     * into an agent-reserved path, or nowhere, until the set is stable.
+     *
+     * @param array<string, mixed> $state
+     */
+    private function createDelayedLinks(array &$state, Context $ctx): void
+    {
+        $created = [];
+        foreach ($state['delayed'] as [$target, $link]) {
+            $parent = realpath(dirname($target));
+            if ($parent === false || !PathJail::isInside($parent, $state['dest']) || $ctx->jail->isForbidden($parent)) {
+                $state['skippedLinks']++;
+                continue;
+            }
+            if (is_link($target) || is_file($target)) {
+                @unlink($target);
+            }
+            if (!file_exists($target) && @symlink($link, $target)) {
+                $created[] = $target;
+            } else {
+                $state['skippedLinks']++;
+            }
+        }
+        $state['delayed'] = [];
+        do {
+            $removed = false;
+            foreach ($created as $i => $target) {
+                $real = realpath($target);
+                if ($real === false || !PathJail::isInside($real, $state['dest']) || $ctx->jail->isForbidden($real)
+                    || !$ctx->jail->isWithinRoots($real)) {
+                    @unlink($target);
+                    unset($created[$i]);
+                    $state['skippedLinks']++;
+                    $removed = true;
+                }
+            }
+        } while ($removed);
+        $state['fileCount'] += count($created);
     }
 
     /**
@@ -1213,8 +1285,9 @@ use AutoWp\Agent\Jobs\JobHandler;
 /**
  * db.import: streams a (gzipped) SQL file through SqlSplitter and executes it statement by statement.
  * Resumes at the end of the last executed statement; session `SET` statements seen so far are replayed
- * on each new connection. `USE` and `CREATE/DROP DATABASE` are skipped so a dump can only ever touch the
- * site's own database.
+ * on each new connection. Leading `USE` and `CREATE/DROP DATABASE` statements are skipped; cross-database
+ * references inside statements are only limited by the DB user's grants. Dumps that switch sql_mode to
+ * NO_BACKSLASH_ESCAPES or ANSI_QUOTES are refused.
  */
 final class ImportJob implements JobHandler
 {
@@ -1248,6 +1321,15 @@ final class ImportJob implements JobHandler
         $db = $ctx->db();
         if ($this->prepared !== $db) {
             $db->exec('SET NAMES utf8mb4');
+            // SqlSplitter lexes strings the default way; these modes would make the server lex them
+            // differently (statement injection from row data), so they are cleared and then policed.
+            $rows = $db->fetchAll('SELECT @@SESSION.sql_mode AS m');
+            $modes = array_filter(explode(',', strtoupper((string) ($rows[0]['m'] ?? ''))), static function (string $m): bool {
+                return $m !== '' && !in_array($m, ['NO_BACKSLASH_ESCAPES', 'ANSI_QUOTES', 'ANSI'], true);
+            });
+            $db->exec("SET SESSION sql_mode = '" . implode(',', array_map(static function (string $m): string {
+                return (string) preg_replace('/[^A-Z0-9_]/', '', $m);
+            }, $modes)) . "'");
             foreach ($state['replay'] as $sql) {
                 try {
                     $db->exec($sql);
@@ -1255,6 +1337,7 @@ final class ImportJob implements JobHandler
                     // Best effort: a SET that depended on an earlier user variable may not replay.
                 }
             }
+            self::assertLexerCompatible($db);
             $this->prepared = $db;
         }
         $reader = $state['gzip'] ? new GzipReader($state['source'], $state['pos']) : new PlainReader($state['source'], $state['pos']);
@@ -1298,12 +1381,28 @@ final class ImportJob implements JobHandler
             throw AgentException::internal('statement ' . ($state['statements'] + 1) . ' failed: ' . substr($e->getMessage(), 0, 300));
         }
         $state['statements']++;
+        if (preg_match('/^(INSERT|REPLACE)\b/i', $head) !== 1) {
+            // Anything but plain data rows might have changed sql_mode (SET, PREPARE/EXECUTE, ...).
+            self::assertLexerCompatible($db);
+        }
         if (preg_match('/^SET\s/i', $head) === 1 && strlen($sql) < 1024) {
             $replay = array_values(array_filter($state['replay'], static function (string $s) use ($sql): bool {
                 return $s !== $sql;
             }));
             $replay[] = $sql;
             $state['replay'] = array_slice($replay, -self::MAX_REPLAY);
+        }
+    }
+
+    /** Refuses to go on when the session would lex quotes differently from SqlSplitter. */
+    public static function assertLexerCompatible(Connection $db): void
+    {
+        $rows = $db->fetchAll('SELECT @@SESSION.sql_mode AS m');
+        $mode = strtoupper((string) ($rows[0]['m'] ?? ''));
+        foreach (['NO_BACKSLASH_ESCAPES', 'ANSI_QUOTES'] as $bad) {
+            if (strpos($mode, $bad) !== false) {
+                throw AgentException::invalidParams('the dump enables sql_mode ' . $bad . ', which db.import refuses (statement splitting would be unsafe)');
+            }
         }
     }
 
@@ -1978,12 +2077,15 @@ final class Agent
             $this->ctx->clock
         );
         try {
+            if (!$this->isHttps($server)) {
+                throw new AuthFailure('insecure_transport');
+            }
             if ($body === null) {
                 throw new AuthFailure('body_too_large');
             }
             $keyId = $verifier->verify($method, $path, $headers, $body, $ip);
         } catch (AuthFailure $e) {
-            $this->ctx->audit->record('auth_failed', ['ip' => $ip, 'reason' => $e->getReason()]);
+            $this->ctx->authAudit()->recordThrottled('auth_failed', $ip . '|' . $e->getReason(), ['ip' => substr($ip, 0, 64), 'reason' => $e->getReason()]);
             return [404, ''];
         }
 
@@ -2092,6 +2194,23 @@ final class Agent
         }
         $err = is_array($r['error'] ?? null) ? $r['error'] : [];
         throw new AgentException((string) ($err['code'] ?? 'wp_fatal'), (string) ($err['message'] ?? 'WordPress bridge failed'));
+    }
+
+    /** @param array<string, mixed> $server */
+    private function isHttps(array $server): bool
+    {
+        $cfg = $this->ctx->config;
+        if ($cfg->allowInsecureHttp) {
+            return true;
+        }
+        $https = strtolower((string) ($server['HTTPS'] ?? ''));
+        if ($https !== '' && $https !== 'off') {
+            return true;
+        }
+        if ((string) ($server['REQUEST_SCHEME'] ?? '') === 'https') {
+            return true;
+        }
+        return $cfg->trustForwardedProto && strtolower((string) ($server['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
     }
 
     public static function safeMessage(\Throwable $e): string
@@ -2979,6 +3098,63 @@ final class AuditLog
     }
 
     /**
+     * Like record(), but at most one line per key per $window seconds; suppressed occurrences are
+     * counted and reported on the next line for that key. Used for unauthenticated hits, so floods
+     * cannot fill the disk or push real entries out of the log.
+     *
+     * @param array<string, mixed> $fields
+     */
+    public function recordThrottled(string $event, string $key, array $fields, int $window = 60): void
+    {
+        $now = ($this->clock)();
+        $key = hash('sha256', $key);
+        $file = $this->file . '.throttle';
+        $old = umask(0077);
+        $lock = @fopen($file . '.lock', 'c');
+        umask($old);
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            return;
+        }
+        $suppressed = 0;
+        $write = true;
+        try {
+            $raw = DataDir::readProtected($file);
+            $map = $raw === null ? [] : json_decode($raw, true);
+            if (!is_array($map)) {
+                $map = [];
+            }
+            foreach ($map as $k => $v) {
+                if (!is_array($v) || $now - (int) $v[0] >= $window) {
+                    if (is_array($v) && (int) $v[1] > 0 && $k === $key) {
+                        $suppressed = (int) $v[1];
+                    }
+                    unset($map[$k]);
+                }
+            }
+            if (isset($map[$key])) {
+                $map[$key][1]++;
+                $write = false;
+            } elseif (count($map) >= 5000) {
+                $map['overflow'] = [$now, (int) ($map['overflow'][1] ?? 0) + 1];
+                $write = false;
+            } else {
+                $map[$key] = [$now, 0];
+            }
+            try {
+                DataDir::writeProtected($file, (string) json_encode($map));
+            } catch (\Throwable $e) {
+                // auditing must never break the request
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+        if ($write) {
+            $this->record($event, $fields + ($suppressed > 0 ? ['suppressed' => $suppressed] : []));
+        }
+    }
+
+    /**
      * @param resource $fh
      */
     private function lastLineHash($fh, int $size): string
@@ -3182,6 +3358,12 @@ final class Config
     public $webUseBinaries = false;
     /** @var bool Master switch for tar/mysqldump (false = always use the native implementations). */
     public $useBinaries = true;
+    /** @var bool fs.extract creates symlink/hard-link entries (validated) instead of skipping them. */
+    public $extractLinks = false;
+    /** @var bool Accept web requests over plain HTTP (otherwise HTTPS is required). */
+    public $allowInsecureHttp = false;
+    /** @var bool Treat `X-Forwarded-Proto: https` as HTTPS (only behind a trusted proxy). */
+    public $trustForwardedProto = false;
     /** @var string|null HTTP_HOST to present to WordPress in CLI bridge mode. */
     public $siteHost;
     /** @var string|null Path of the config file this was loaded from. */
@@ -3272,6 +3454,9 @@ final class Config
         }
         $c->webUseBinaries = (bool) ($a['webUseBinaries'] ?? false);
         $c->useBinaries = (bool) ($a['useBinaries'] ?? true);
+        $c->extractLinks = (bool) ($a['extractLinks'] ?? false);
+        $c->allowInsecureHttp = (bool) ($a['allowInsecureHttp'] ?? false);
+        $c->trustForwardedProto = (bool) ($a['trustForwardedProto'] ?? false);
         $host = self::str($a, 'siteHost', '');
         $c->siteHost = $host !== '' ? $host : null;
         return $c;
@@ -3345,6 +3530,8 @@ final class Context
     public $agentFile;
     /** @var Connection|null */
     private $db;
+    /** @var AuditLog|null */
+    private $authAudit;
 
     public function __construct(Config $config, string $mode, callable $clock, string $agentFile)
     {
@@ -3355,6 +3542,7 @@ final class Context
         $this->data = new DataDir($config->dataDir);
         $this->data->ensure();
         $this->audit = new AuditLog($this->data->path('audit.log.php'), $clock);
+        $this->gcTmp();
         $this->binaries = new Binaries();
         $roots = [$config->wpRoot];
         if ($config->outsideDocrootDir !== null) {
@@ -3373,6 +3561,15 @@ final class Context
         $this->jail = new PathJail($config->wpRoot, $roots, $forbidden);
     }
 
+    /** Separate, throttled log for unauthenticated requests (keeps the main trail intact). */
+    public function authAudit(): AuditLog
+    {
+        if ($this->authAudit === null) {
+            $this->authAudit = new AuditLog($this->data->path('auth-failures.log.php'), $this->clock);
+        }
+        return $this->authAudit;
+    }
+
     public function now(): int
     {
         return ($this->clock)();
@@ -3383,11 +3580,33 @@ final class Context
         return $this->mode === self::MODE_CLI;
     }
 
+    /** Removes stale temp files (e.g. a mysqldump defaults file left by a killed process). */
+    private function gcTmp(): void
+    {
+        $dir = $this->data->path('tmp');
+        if (!is_dir($dir)) {
+            return;
+        }
+        $cutoff = time() - 3600;
+        foreach (glob($dir . '/*') ?: [] as $f) {
+            $m = @filemtime($f);
+            if ($m !== false && ($m < $cutoff || (strpos(PathJail::baseName($f), 'my-') === 0 && $m < time() - 600))) {
+                @unlink($f);
+            }
+        }
+    }
+
     /** Whether external binaries may be used for long-running work in this mode. */
     public function mayUseBinaries(): bool
     {
         return $this->config->useBinaries && $this->binaries->execEnabled()
             && ($this->isCli() || $this->config->webUseBinaries);
+    }
+
+    /** Injects a connection (tests). */
+    public function useDb(Connection $db): void
+    {
+        $this->db = $db;
     }
 
     public function db(): Connection
@@ -5388,7 +5607,8 @@ final class IpMatcher
                 if ($netBin !== false && strlen($netBin) === 4 && strlen($addr) === 16
                     && substr($addr, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
                     $addr4 = substr($addr, 12);
-                    if (self::prefixMatch($addr4, $netBin, $bits ?? 32)) {
+                    $b4 = $bits ?? 32;
+                    if ($b4 >= 0 && $b4 <= 32 && self::prefixMatch($addr4, $netBin, $b4)) {
                         return true;
                     }
                 }
@@ -6311,6 +6531,7 @@ final class WpOps
         add_filter('wp_doing_cron', $cron);
         try {
             if ($version !== null && $version !== $available) {
+                self::assertWporgHosted((string) (get_plugins()[$file]['UpdateURI'] ?? ''), $t, $file);
                 $result = $upgrader->install(
                     'https://downloads.wordpress.org/plugin/' . rawurlencode($slug) . '.' . rawurlencode($version) . '.zip',
                     ['overwrite_package' => true]
@@ -6348,6 +6569,7 @@ final class WpOps
         }
         $upgrader = new \Theme_Upgrader($skin);
         if ($version !== null && $version !== $available) {
+            self::assertWporgHosted((string) $theme->get('UpdateURI'), $t, $slug);
             $result = $upgrader->install(
                 'https://downloads.wordpress.org/theme/' . rawurlencode($slug) . '.' . rawurlencode($version) . '.zip',
                 ['overwrite_package' => true]
@@ -6386,6 +6608,29 @@ final class WpOps
         $result = $upgrader->upgrade($update);
         $this->assertSuccess($result, $skin);
         return ['fromVersion' => $from, 'toVersion' => self::installedCoreVersion(), 'messages' => self::messages($skin)];
+    }
+
+    /**
+     * A pinned version is fetched from downloads.wordpress.org, so it is only allowed for items that
+     * wordpress.org actually serves: no foreign `Update URI` header, and listed by the wp.org update API
+     * (`response` or `no_update`). Anything else (premium, private, slug-squatting risk) is refused.
+     *
+     * @param mixed $transient update_plugins / update_themes site transient
+     */
+    private static function assertWporgHosted(string $updateUri, $transient, string $key): void
+    {
+        if ($updateUri !== '') {
+            $host = strtolower((string) parse_url(strpos($updateUri, '://') === false ? 'https://' . $updateUri : $updateUri, PHP_URL_HOST));
+            if (!in_array($host, ['wordpress.org', 'w.org'], true)) {
+                throw new AgentException('capability', 'pinned versions are only supported for wordpress.org-hosted items (Update URI is set)');
+            }
+        }
+        $listed = is_object($transient)
+            && ((isset($transient->response) && isset(((array) $transient->response)[$key]))
+                || (isset($transient->no_update) && isset(((array) $transient->no_update)[$key])));
+        if (!$listed) {
+            throw new AgentException('capability', 'pinned versions are only supported for wordpress.org-hosted items (not known to the wordpress.org update API)');
+        }
     }
 
     /** Reads $wp_version from wp-includes/version.php without including it again. */

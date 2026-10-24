@@ -166,6 +166,7 @@ final class WpOps
         add_filter('wp_doing_cron', $cron);
         try {
             if ($version !== null && $version !== $available) {
+                self::assertWporgHosted((string) (get_plugins()[$file]['UpdateURI'] ?? ''), $t, $file);
                 $result = $upgrader->install(
                     'https://downloads.wordpress.org/plugin/' . rawurlencode($slug) . '.' . rawurlencode($version) . '.zip',
                     ['overwrite_package' => true]
@@ -203,6 +204,7 @@ final class WpOps
         }
         $upgrader = new \Theme_Upgrader($skin);
         if ($version !== null && $version !== $available) {
+            self::assertWporgHosted((string) $theme->get('UpdateURI'), $t, $slug);
             $result = $upgrader->install(
                 'https://downloads.wordpress.org/theme/' . rawurlencode($slug) . '.' . rawurlencode($version) . '.zip',
                 ['overwrite_package' => true]
@@ -241,6 +243,29 @@ final class WpOps
         $result = $upgrader->upgrade($update);
         $this->assertSuccess($result, $skin);
         return ['fromVersion' => $from, 'toVersion' => self::installedCoreVersion(), 'messages' => self::messages($skin)];
+    }
+
+    /**
+     * A pinned version is fetched from downloads.wordpress.org, so it is only allowed for items that
+     * wordpress.org actually serves: no foreign `Update URI` header, and listed by the wp.org update API
+     * (`response` or `no_update`). Anything else (premium, private, slug-squatting risk) is refused.
+     *
+     * @param mixed $transient update_plugins / update_themes site transient
+     */
+    private static function assertWporgHosted(string $updateUri, $transient, string $key): void
+    {
+        if ($updateUri !== '') {
+            $host = strtolower((string) parse_url(strpos($updateUri, '://') === false ? 'https://' . $updateUri : $updateUri, PHP_URL_HOST));
+            if (!in_array($host, ['wordpress.org', 'w.org'], true)) {
+                throw new AgentException('capability', 'pinned versions are only supported for wordpress.org-hosted items (Update URI is set)');
+            }
+        }
+        $listed = is_object($transient)
+            && ((isset($transient->response) && isset(((array) $transient->response)[$key]))
+                || (isset($transient->no_update) && isset(((array) $transient->no_update)[$key])));
+        if (!$listed) {
+            throw new AgentException('capability', 'pinned versions are only supported for wordpress.org-hosted items (not known to the wordpress.org update API)');
+        }
     }
 
     /** Reads $wp_version from wp-includes/version.php without including it again. */

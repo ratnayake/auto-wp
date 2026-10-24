@@ -36,6 +36,7 @@ final class AgentTest extends TestCase
             'REQUEST_METHOD' => $r['method'],
             'REQUEST_URI' => $r['path'] . '?ignored=1',
             'REMOTE_ADDR' => '203.0.113.9',
+            'HTTPS' => 'on',
             'HTTP_X_AUTOWP_SITE' => $r['siteId'],
             'HTTP_X_AUTOWP_KEY_ID' => self::vectors()['keyId'],
             'HTTP_X_AUTOWP_ALG' => 'ed25519',
@@ -94,6 +95,19 @@ final class AgentTest extends TestCase
         $get = self::server($r);
         $get['REQUEST_METHOD'] = 'GET';
         self::assertSame([404, ''], $agent->handleWeb($get, $r['body']));
+    }
+
+    public function testPlainHttpIsRefusedUnlessAllowed(): void
+    {
+        [$agent] = $this->webAgent();
+        $r = self::vectors()['requests'][0];
+        $plain = self::server($r);
+        unset($plain['HTTPS']);
+        self::assertSame([404, ''], $agent->handleWeb($plain, $r['body']));
+        $plain['HTTP_X_FORWARDED_PROTO'] = 'https';
+        self::assertSame([404, ''], $agent->handleWeb($plain, $r['body']), 'X-Forwarded-Proto is not trusted by default');
+        $plain['HTTPS'] = 'off';
+        self::assertSame([404, ''], $agent->handleWeb($plain, $r['body']));
     }
 
     public function testStep7ErrorsAreJson(): void

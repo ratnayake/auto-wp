@@ -106,15 +106,24 @@ final class DumpJob implements JobHandler
             $state['dump']['tables'][$i]['rows'] = DbInfo::count($db, $t['name']);
         }
         $tmp = $ctx->data->ensure('tmp');
-        $defaults = $tmp . '/my-' . bin2hex(random_bytes(8)) . '.cnf';
-        $errFile = $defaults . '.err';
-        $old = umask(0077);
-        $written = file_put_contents($defaults, self::defaultsFile($cfg));
-        umask($old);
-        if ($written === false) {
-            throw AgentException::internal('cannot write mysqldump defaults file');
+        $errFile = $tmp . '/dump-' . bin2hex(random_bytes(8)) . '.err';
+        // Credentials go through an inherited pipe (/dev/fd/3) where the OS has one, so no file with
+        // the password ever exists. Otherwise: a 0600 file, removed in finally, on shutdown, and by the
+        // tmp GC (Context) should the process be killed.
+        $viaPipe = is_dir('/dev/fd');
+        $defaults = $viaPipe ? '/dev/fd/3' : $tmp . '/my-' . bin2hex(random_bytes(8)) . '.cnf';
+        if (!$viaPipe) {
+            $old = umask(0077);
+            $written = file_put_contents($defaults, self::defaultsFile($cfg));
+            umask($old);
+            if ($written === false) {
+                throw AgentException::internal('cannot write mysqldump defaults file');
+            }
+            @chmod($defaults, 0600);
+            register_shutdown_function(static function () use ($defaults): void {
+                @unlink($defaults);
+            });
         }
-        @chmod($defaults, 0600);
         $gz = null;
         try {
             $argv = ['mysqldump', '--defaults-extra-file=' . $defaults, '--single-transaction', '--quick',
@@ -129,7 +138,15 @@ final class DumpJob implements JobHandler
             }
             $argv[] = $cfg['DB_NAME'];
             $pipes = [];
-            $proc = $ctx->binaries->open($argv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+            $desc = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']];
+            if ($viaPipe) {
+                $desc[3] = ['pipe', 'r'];
+            }
+            $proc = $ctx->binaries->open($argv, $desc, $pipes);
+            if ($viaPipe) {
+                FsUtil::writeAll($pipes[3], self::defaultsFile($cfg));
+                fclose($pipes[3]);
+            }
             $gz = new GzipWriter($state['dest'], 0);
             while (!feof($pipes[1])) {
                 $chunk = fread($pipes[1], 1048576);
@@ -151,7 +168,9 @@ final class DumpJob implements JobHandler
             if ($gz !== null) {
                 $gz->close();
             }
-            @unlink($defaults);
+            if (!$viaPipe) {
+                @unlink($defaults);
+            }
             @unlink($errFile);
         }
         return $this->result($state, 'mysqldump');
