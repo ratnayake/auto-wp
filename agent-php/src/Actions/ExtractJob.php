@@ -16,7 +16,9 @@ use AutoWp\Agent\Security\PathJail;
 /**
  * fs.extract: native, resumable .tar(.gz) extraction with entry path-traversal protection:
  * - entry names must be relative and free of `..` (otherwise the job fails with path_jail);
- * - nothing is ever written through a symlink (existing symlinks in the way are replaced or refused);
+ * - nothing is ever written through a symlink; symlinked parent dirs must resolve inside destDir (or,
+ *   when they pre-date the extraction, inside the jail); every target is re-checked after realpath;
+ * - files are written to a temporary sibling and renamed into place when complete;
  * - symlink entries are only created when their target stays inside destDir; hard links are copied;
  * - agent-reserved paths are skipped; setuid/setgid/sticky bits are dropped.
  */
@@ -43,6 +45,7 @@ final class ExtractJob implements JobHandler
             'fileCount' => 0,
             'entries' => 0,
             'size' => (int) filesize($archive),
+            'links' => [],
         ];
     }
 
@@ -53,13 +56,13 @@ final class ExtractJob implements JobHandler
         $out = null;
         if ($state['cur'] !== null) {
             $tar->resumeInData($state['cur']['remaining'], $state['cur']['padding']);
-            $out = $this->openOutput($state['cur']['abs'], $state['cur']['off']);
+            $out = $this->openOutput($state['cur']['tmp'], $state['cur']['off']);
         }
         try {
             while (true) {
                 if ($state['cur'] !== null) {
                     if ($out === null) {
-                        $out = $this->openOutput($state['cur']['abs'], $state['cur']['off']);
+                        $out = $this->openOutput($state['cur']['tmp'], $state['cur']['off']);
                     }
                     $chunk = $tar->readData(self::CHUNK);
                     FsUtil::writeAll($out, $chunk);
@@ -80,6 +83,11 @@ final class ExtractJob implements JobHandler
                     }
                     $state['entries']++;
                     $this->handleEntry($state, $ctx, $tar, $e);
+                    if ($state['cur'] === null) {
+                        // Skipped or data-less entry: consume its data now, so a checkpoint taken
+                        // below always sits on an entry boundary.
+                        $tar->skipData();
+                    }
                 }
                 if (microtime(true) >= $deadline) {
                     break;
@@ -114,7 +122,17 @@ final class ExtractJob implements JobHandler
         if ($ctx->jail->isForbidden($target) || !$ctx->jail->isWithinRoots($target)) {
             return;
         }
-        $this->ensureParents($ctx, $dest, $rel);
+        $this->ensureParents($ctx, $state, $rel);
+        // Check where the entry really lands (parents may be symlinked directories).
+        $realParent = realpath(dirname($target));
+        if ($realParent === false) {
+            throw AgentException::internal('cannot resolve the parent of ' . $rel);
+        }
+        $realTarget = $realParent . '/' . PathJail::baseName($target);
+        if ($ctx->jail->isForbidden($realTarget) || !$ctx->jail->isWithinRoots($realTarget)) {
+            throw AgentException::jail('archive entry resolves outside the allowed roots');
+        }
+        $target = $realTarget;
         $exists = file_exists($target) || is_link($target);
 
         switch ($e['type']) {
@@ -140,21 +158,21 @@ final class ExtractJob implements JobHandler
                     if (is_dir($target) && !is_link($target)) {
                         throw AgentException::internal('a directory is in the way of ' . $rel);
                     }
-                    // Unlink first: never write through a symlink or into a hard-linked inode.
-                    if (!@unlink($target)) {
-                        throw AgentException::internal('cannot replace ' . $rel);
-                    }
                 }
+                // Written to a temporary sibling and renamed into place when complete: never writes
+                // through a symlink or into a hard-linked inode, and a slice killed mid-file leaves
+                // no truncated file behind (important with overwrite=false).
                 $state['fileCount']++;
                 $state['cur'] = [
                     'abs' => $target,
+                    'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
                     'off' => 0,
                     'mode' => $e['mode'] & 0777,
                     'mtime' => $e['mtime'],
                     'remaining' => $e['size'],
                     'padding' => 0,
                 ];
-                $fh = $this->openOutput($target, 0);
+                $fh = $this->openOutput($state['cur']['tmp'], 0);
                 fclose($fh);
                 if ($e['size'] === 0) {
                     $this->finishFile($state['cur']);
@@ -162,7 +180,7 @@ final class ExtractJob implements JobHandler
                 }
                 return;
             case '2':
-                if (!self::linkStaysInside($rel, $e['link'])) {
+                if (!self::linkStaysInside($rel, $e['link']) || !self::resolvesInside(dirname($target) . '/' . $e['link'], $dest)) {
                     $ctx->audit->record('extract.skip_symlink', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
@@ -174,6 +192,9 @@ final class ExtractJob implements JobHandler
                 }
                 if (@symlink($e['link'], $target)) {
                     $state['fileCount']++;
+                    if (count($state['links']) < 100000) {
+                        $state['links'][] = $target;
+                    }
                 }
                 return;
             case '1':
@@ -182,8 +203,8 @@ final class ExtractJob implements JobHandler
                 } catch (AgentException $ex) {
                     return;
                 }
-                $from = $dest . '/' . $linkRel;
-                if (!is_file($from) || is_link($from) || ($exists && !$state['overwrite'])) {
+                $from = realpath($dest . '/' . $linkRel);
+                if ($from === false || !PathJail::isInside($from, $dest) || !is_file($from) || ($exists && !$state['overwrite'])) {
                     return;
                 }
                 if (is_link($target)) {
@@ -199,17 +220,24 @@ final class ExtractJob implements JobHandler
     }
 
     /** Creates the entry's parent directories inside $dest, refusing to traverse symlinks. */
-    private function ensureParents(Context $ctx, string $dest, string $rel): void
+    /** @param array<string, mixed> $state */
+    private function ensureParents(Context $ctx, array $state, string $rel): void
     {
+        $dest = $state['dest'];
         $segs = explode('/', $rel);
         array_pop($segs);
         $cur = $dest;
         foreach ($segs as $seg) {
             $cur .= '/' . $seg;
             if (is_link($cur)) {
-                // A symlinked directory is only traversed when it resolves inside the jail.
+                // A symlinked directory is traversed only when it resolves inside destDir, or, for a
+                // symlink that existed before this extraction (e.g. a relocated uploads dir), inside
+                // the allowed roots. Links created from the archive itself never lead outside destDir.
                 $real = realpath($cur);
-                if ($real === false || !is_dir($real) || !$ctx->jail->isWithinRoots($real) || $ctx->jail->isForbidden($real)) {
+                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real)
+                    && (PathJail::isInside($real, $dest)
+                        || (!in_array($cur, $state['links'], true) && $ctx->jail->isWithinRoots($real)));
+                if (!$ok) {
                     throw AgentException::jail('archive entry would be written through a symlink');
                 }
                 continue;
@@ -250,6 +278,30 @@ final class ExtractJob implements JobHandler
         return true;
     }
 
+    /**
+     * Resolves $path like the kernel would (realpath of the longest existing prefix, lexical for the
+     * rest) and checks it stays inside $base.
+     */
+    public static function resolvesInside(string $path, string $base): bool
+    {
+        $parts = explode('/', $path);
+        $tail = [];
+        while ($parts !== []) {
+            $prefix = implode('/', $parts);
+            $real = $prefix === '' ? '/' : realpath($prefix);
+            if ($real !== false) {
+                try {
+                    $full = PathJail::normalize($real . '/' . implode('/', $tail));
+                } catch (AgentException $e) {
+                    return false;
+                }
+                return PathJail::isInside($full, $base);
+            }
+            array_unshift($tail, (string) array_pop($parts));
+        }
+        return false;
+    }
+
     /** @return resource */
     private function openOutput(string $abs, int $offset)
     {
@@ -270,8 +322,15 @@ final class ExtractJob implements JobHandler
     /** @param array<string, mixed> $cur */
     private function finishFile(array $cur): void
     {
-        @chmod($cur['abs'], $cur['mode']);
-        @touch($cur['abs'], max(0, (int) $cur['mtime']));
+        @chmod($cur['tmp'], $cur['mode']);
+        @touch($cur['tmp'], max(0, (int) $cur['mtime']));
+        if (is_link($cur['abs'])) {
+            @unlink($cur['abs']);
+        }
+        if (!@rename($cur['tmp'], $cur['abs'])) {
+            @unlink($cur['tmp']);
+            throw AgentException::internal('cannot move extracted file into place');
+        }
     }
 
     public function progress(array $state): array

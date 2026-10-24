@@ -206,13 +206,27 @@ final class ArchiveJob implements JobHandler
             }
             fclose($fh);
             $fh = null;
-            @unlink($state['dest']);
+            // tar writes an uncompressed stream; we gzip it ourselves so the archive gets bounded
+            // members like the native writer's (cheap resumable reads later, e.g. web fs.extract).
             $pipes = [];
             $proc = $ctx->binaries->open(
-                ['tar', '-c', '-z', '-f', $state['dest'], '-C', $state['src'], '--no-recursion', '--null', '-T', $list],
-                [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errFile, 'w']],
+                ['tar', '-c', '-f', '-', '-C', $state['src'], '--no-recursion', '--null', '-T', $list],
+                [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']],
                 $pipes
             );
+            $gz = new GzipWriter($state['dest'], 0);
+            try {
+                while (!feof($pipes[1])) {
+                    $chunk = fread($pipes[1], 1048576);
+                    if ($chunk === false) {
+                        break;
+                    }
+                    $gz->write($chunk);
+                }
+            } finally {
+                fclose($pipes[1]);
+                $gz->close();
+            }
             $code = proc_close($proc);
             if ($code !== 0 && !($code === 1 && $this->isGnuTar($ctx))) {
                 $err = substr((string) @file_get_contents($errFile), 0, 400);

@@ -5,20 +5,29 @@ declare(strict_types=1);
 namespace AutoWp\Agent\Archive;
 
 use AutoWp\Agent\AgentException;
+use AutoWp\Agent\Fs\FsUtil;
 
 /**
- * Appends one gzip member per writer session. A job that runs over several requests opens a new writer
- * per slice; the result is a valid multi-member gzip file (RFC 1952) that gzip/tar/zlib read as one stream.
- * The file is truncated back to `$resumeAt` first, so a slice that died half-way is simply redone.
+ * Writes gzip members (RFC 1952). A job that runs over several requests opens a new writer per slice,
+ * and a writer also starts a new member every MEMBER_BYTES of input; the result is a valid multi-member
+ * gzip file that gzip/tar/zlib read as one stream, and that GzipReader can resume from cheaply (it only
+ * has to re-inflate from the start of the current member). The file is truncated back to `$resumeAt`
+ * first, so a slice that died half-way is simply redone.
  */
 final class GzipWriter implements ByteSink
 {
+    public const MEMBER_BYTES = 33554432;
+
     /** @var resource */
     private $fh;
     /** @var resource|\DeflateContext */
     private $ctx;
     /** @var int */
+    private $level;
+    /** @var int */
     private $written = 0;
+    /** @var int input bytes in the current member */
+    private $inMember = 0;
     /** @var bool */
     private $closed = false;
 
@@ -34,13 +43,19 @@ final class GzipWriter implements ByteSink
             fclose($fh);
             throw AgentException::internal('cannot reposition output file');
         }
-        $ctx = deflate_init(ZLIB_ENCODING_GZIP, ['level' => $level]);
+        $this->fh = $fh;
+        $this->level = $level;
+        $this->ctx = $this->newContext();
+    }
+
+    /** @return resource|\DeflateContext */
+    private function newContext()
+    {
+        $ctx = deflate_init(ZLIB_ENCODING_GZIP, ['level' => $this->level]);
         if ($ctx === false) {
-            fclose($fh);
             throw AgentException::internal('deflate_init failed');
         }
-        $this->fh = $fh;
-        $this->ctx = $ctx;
+        return $ctx;
     }
 
     public function write(string $data): void
@@ -49,11 +64,17 @@ final class GzipWriter implements ByteSink
             return;
         }
         $this->written += strlen($data);
+        $this->inMember += strlen($data);
         $out = deflate_add($this->ctx, $data, ZLIB_NO_FLUSH);
         if ($out === false) {
             throw AgentException::internal('deflate failed');
         }
-        $this->put($out);
+        FsUtil::writeAll($this->fh, $out);
+        if ($this->inMember >= self::MEMBER_BYTES) {
+            $this->finishMember();
+            $this->ctx = $this->newContext();
+            $this->inMember = 0;
+        }
     }
 
     /** Finishes the gzip member and returns the compressed file size. */
@@ -63,33 +84,25 @@ final class GzipWriter implements ByteSink
             throw AgentException::internal('writer already closed');
         }
         $this->closed = true;
-        $out = deflate_add($this->ctx, '', ZLIB_FINISH);
-        if ($out === false) {
-            throw AgentException::internal('deflate failed');
-        }
-        $this->put($out);
+        $this->finishMember();
         fflush($this->fh);
         $size = (int) ftell($this->fh);
         fclose($this->fh);
         return $size;
     }
 
+    private function finishMember(): void
+    {
+        $out = deflate_add($this->ctx, '', ZLIB_FINISH);
+        if ($out === false) {
+            throw AgentException::internal('deflate failed');
+        }
+        FsUtil::writeAll($this->fh, $out);
+    }
+
     /** Uncompressed bytes written in this session. */
     public function uncompressedBytes(): int
     {
         return $this->written;
-    }
-
-    private function put(string $bytes): void
-    {
-        $len = strlen($bytes);
-        $off = 0;
-        while ($off < $len) {
-            $n = fwrite($this->fh, $off === 0 ? $bytes : substr($bytes, $off));
-            if ($n === false || $n === 0) {
-                throw AgentException::internal('write failed (disk full?)');
-            }
-            $off += $n;
-        }
     }
 }

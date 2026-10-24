@@ -50,7 +50,7 @@ final class Context
         }
         $forbidden = [$config->dataDir];
         // The agent's own directory is off-limits when it is a dedicated one; otherwise just the file.
-        if (in_array(basename(dirname($agentFile)), ['auto-wp-agent', '.auto-wp'], true)) {
+        if (in_array(\AutoWp\Agent\Security\PathJail::baseName(dirname($agentFile)), ['auto-wp-agent', '.auto-wp'], true)) {
             $forbidden[] = dirname($agentFile);
         } else {
             $forbidden[] = $agentFile;

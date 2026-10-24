@@ -177,6 +177,11 @@ final class ArchiveTest extends TestCase
             'absolute' => [[['/tmp/escape.txt', '0', 'x', '']]],
             'symlink then write through it' => [[['link', '2', '', '/tmp'], ['link/escape.txt', '0', 'x', '']]],
             'relative symlink escape then write' => [[['d/', '5', '', ''], ['d/up', '2', '', '../../..'], ['d/up/escape.txt', '0', 'x', '']]],
+            'chained symlinks climbing out' => [[
+                ['a/', '5', '', ''], ['a/l', '2', '', '..'], ['a/m', '2', '', 'l/..'], ['a/n', '2', '', 'm/..'],
+                ['a/n/escape.txt', '0', 'x', ''], ['a/m/escape.txt', '0', 'x', ''],
+            ]],
+            'hard link to a file outside' => [[['a/', '5', '', ''], ['a/l', '2', '', '..'], ['a/m', '2', '', 'l/..'], ['leak', '1', '', 'a/m/secret.txt']]],
         ];
     }
 
@@ -185,6 +190,7 @@ final class ArchiveTest extends TestCase
     {
         $s = $this->site();
         $arch = $s['wp'] . '/evil.tar.gz';
+        file_put_contents($s['wp'] . '/secret.txt', 'outside destDir');
         self::evilArchive($arch, $entries);
         mkdir($s['wp'] . '/dest');
         $h = new ExtractJob();
@@ -197,8 +203,30 @@ final class ArchiveTest extends TestCase
         self::assertFileDoesNotExist($s['root'] . '/escape.txt');
         self::assertFileDoesNotExist($s['wp'] . '/escape.txt');
         self::assertFileDoesNotExist('/tmp/escape.txt');
+        self::assertFileDoesNotExist($s['wp'] . '/dest/leak');
+        self::assertFalse(is_link($s['wp'] . '/dest/a/m'), 'link climbing out of destDir must not be created');
         self::assertFalse(is_link($s['wp'] . '/dest/link'), 'absolute symlink must not be created');
         self::assertFalse(is_link($s['wp'] . '/dest/d/up'), 'escaping symlink must not be created');
+    }
+
+    public function testSlicedExtractWithOverwriteFalseSkipsCleanly(): void
+    {
+        $s = $this->site([], Context::MODE_WEB);
+        $files = $this->populate($s['wp']);
+        $h = new ArchiveJob();
+        $state = $h->init(['sourceDir' => 'wp-content', 'dest' => 'a.tar.gz', 'excludes' => [], 'paths' => null], $s['ctx']);
+        $h->step($state, $s['ctx'], INF);
+        mkdir($s['wp'] . '/r');
+        // Pre-existing files with other content must survive overwrite=false.
+        mkdir($s['wp'] . '/r/uploads/2026/10', 0755, true);
+        file_put_contents($s['wp'] . '/r/uploads/2026/10/ünïcødé photo.jpg', 'keep me');
+        file_put_contents($s['wp'] . '/r/debug.log', 'keep me too');
+        $x = self::runSliced(new ExtractJob(), ExtractJob::class, ['archive' => 'a.tar.gz', 'destDir' => 'r', 'overwrite' => false], $s['ctx'], 0.0);
+        self::assertSame('keep me', file_get_contents($s['wp'] . '/r/uploads/2026/10/ünïcødé photo.jpg'));
+        self::assertSame('keep me too', file_get_contents($s['wp'] . '/r/debug.log'));
+        self::assertSame($files['wp-content/cache/page.html'], file_get_contents($s['wp'] . '/r/cache/page.html'));
+        self::assertSame([], glob($s['wp'] . '/r/{,*/,*/*/}.*.autowp-part', GLOB_BRACE));
+        self::assertGreaterThan(3, $x['fileCount']);
     }
 
     public function testTruncatedAndCorruptArchivesFailTest(): void

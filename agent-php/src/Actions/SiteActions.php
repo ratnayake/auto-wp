@@ -78,7 +78,9 @@ final class SiteActions
                 fseek($fh, $offset);
                 $data = (string) fread($fh, min($max, $size - $offset));
                 if ($offset + strlen($data) < $size) {
-                    $data = self::trimPartialUtf8($data);
+                    $trimmed = self::trimPartialUtf8($data);
+                    // Never return nothing when there is data (tiny maxBytes): progress beats tidiness.
+                    $data = $trimmed === '' ? $data : $trimmed;
                 }
             }
         } finally {

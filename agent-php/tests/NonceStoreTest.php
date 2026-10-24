@@ -16,8 +16,9 @@ final class NonceStoreTest extends TestCase
         self::assertFalse($s->checkAndRecord('AAECAwQFBgcICQoLDA0ODw', 1001));
         self::assertFalse((new NonceStore($file, 600))->checkAndRecord('AAECAwQFBgcICQoLDA0ODw', 1599));
         self::assertTrue($s->checkAndRecord('EBESExQVFhcYGRobHB0eHw', 1002));
-        // Expired entries are pruned.
-        self::assertTrue($s->checkAndRecord('AAECAwQFBgcICQoLDA0ODw', 1600));
+        // Still known at exactly ts + TTL (2 x clock skew), pruned afterwards.
+        self::assertFalse($s->checkAndRecord('AAECAwQFBgcICQoLDA0ODw', 1600));
+        self::assertTrue($s->checkAndRecord('AAECAwQFBgcICQoLDA0ODw', 1601));
         self::assertStringStartsWith('<?php', (string) file_get_contents($file));
     }
 

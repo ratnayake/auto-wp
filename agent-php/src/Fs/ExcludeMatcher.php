@@ -43,7 +43,7 @@ final class ExcludeMatcher
 
     public function excluded(string $rel, bool $isDir): bool
     {
-        $base = basename($rel);
+        $base = \AutoWp\Agent\Security\PathJail::baseName($rel);
         foreach ($this->rules as $r) {
             if ($r['dirOnly'] && !$isDir) {
                 continue;

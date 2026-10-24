@@ -293,13 +293,27 @@ final class ArchiveJob implements JobHandler
             }
             fclose($fh);
             $fh = null;
-            @unlink($state['dest']);
+            // tar writes an uncompressed stream; we gzip it ourselves so the archive gets bounded
+            // members like the native writer's (cheap resumable reads later, e.g. web fs.extract).
             $pipes = [];
             $proc = $ctx->binaries->open(
-                ['tar', '-c', '-z', '-f', $state['dest'], '-C', $state['src'], '--no-recursion', '--null', '-T', $list],
-                [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errFile, 'w']],
+                ['tar', '-c', '-f', '-', '-C', $state['src'], '--no-recursion', '--null', '-T', $list],
+                [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']],
                 $pipes
             );
+            $gz = new GzipWriter($state['dest'], 0);
+            try {
+                while (!feof($pipes[1])) {
+                    $chunk = fread($pipes[1], 1048576);
+                    if ($chunk === false) {
+                        break;
+                    }
+                    $gz->write($chunk);
+                }
+            } finally {
+                fclose($pipes[1]);
+                $gz->close();
+            }
             $code = proc_close($proc);
             if ($code !== 0 && !($code === 1 && $this->isGnuTar($ctx))) {
                 $err = substr((string) @file_get_contents($errFile), 0, 400);
@@ -637,7 +651,9 @@ use AutoWp\Agent\Security\PathJail;
 /**
  * fs.extract: native, resumable .tar(.gz) extraction with entry path-traversal protection:
  * - entry names must be relative and free of `..` (otherwise the job fails with path_jail);
- * - nothing is ever written through a symlink (existing symlinks in the way are replaced or refused);
+ * - nothing is ever written through a symlink; symlinked parent dirs must resolve inside destDir (or,
+ *   when they pre-date the extraction, inside the jail); every target is re-checked after realpath;
+ * - files are written to a temporary sibling and renamed into place when complete;
  * - symlink entries are only created when their target stays inside destDir; hard links are copied;
  * - agent-reserved paths are skipped; setuid/setgid/sticky bits are dropped.
  */
@@ -664,6 +680,7 @@ final class ExtractJob implements JobHandler
             'fileCount' => 0,
             'entries' => 0,
             'size' => (int) filesize($archive),
+            'links' => [],
         ];
     }
 
@@ -674,13 +691,13 @@ final class ExtractJob implements JobHandler
         $out = null;
         if ($state['cur'] !== null) {
             $tar->resumeInData($state['cur']['remaining'], $state['cur']['padding']);
-            $out = $this->openOutput($state['cur']['abs'], $state['cur']['off']);
+            $out = $this->openOutput($state['cur']['tmp'], $state['cur']['off']);
         }
         try {
             while (true) {
                 if ($state['cur'] !== null) {
                     if ($out === null) {
-                        $out = $this->openOutput($state['cur']['abs'], $state['cur']['off']);
+                        $out = $this->openOutput($state['cur']['tmp'], $state['cur']['off']);
                     }
                     $chunk = $tar->readData(self::CHUNK);
                     FsUtil::writeAll($out, $chunk);
@@ -701,6 +718,11 @@ final class ExtractJob implements JobHandler
                     }
                     $state['entries']++;
                     $this->handleEntry($state, $ctx, $tar, $e);
+                    if ($state['cur'] === null) {
+                        // Skipped or data-less entry: consume its data now, so a checkpoint taken
+                        // below always sits on an entry boundary.
+                        $tar->skipData();
+                    }
                 }
                 if (microtime(true) >= $deadline) {
                     break;
@@ -735,7 +757,17 @@ final class ExtractJob implements JobHandler
         if ($ctx->jail->isForbidden($target) || !$ctx->jail->isWithinRoots($target)) {
             return;
         }
-        $this->ensureParents($ctx, $dest, $rel);
+        $this->ensureParents($ctx, $state, $rel);
+        // Check where the entry really lands (parents may be symlinked directories).
+        $realParent = realpath(dirname($target));
+        if ($realParent === false) {
+            throw AgentException::internal('cannot resolve the parent of ' . $rel);
+        }
+        $realTarget = $realParent . '/' . PathJail::baseName($target);
+        if ($ctx->jail->isForbidden($realTarget) || !$ctx->jail->isWithinRoots($realTarget)) {
+            throw AgentException::jail('archive entry resolves outside the allowed roots');
+        }
+        $target = $realTarget;
         $exists = file_exists($target) || is_link($target);
 
         switch ($e['type']) {
@@ -761,21 +793,21 @@ final class ExtractJob implements JobHandler
                     if (is_dir($target) && !is_link($target)) {
                         throw AgentException::internal('a directory is in the way of ' . $rel);
                     }
-                    // Unlink first: never write through a symlink or into a hard-linked inode.
-                    if (!@unlink($target)) {
-                        throw AgentException::internal('cannot replace ' . $rel);
-                    }
                 }
+                // Written to a temporary sibling and renamed into place when complete: never writes
+                // through a symlink or into a hard-linked inode, and a slice killed mid-file leaves
+                // no truncated file behind (important with overwrite=false).
                 $state['fileCount']++;
                 $state['cur'] = [
                     'abs' => $target,
+                    'tmp' => dirname($target) . '/.' . substr(PathJail::baseName($target), 0, 200) . '.autowp-part',
                     'off' => 0,
                     'mode' => $e['mode'] & 0777,
                     'mtime' => $e['mtime'],
                     'remaining' => $e['size'],
                     'padding' => 0,
                 ];
-                $fh = $this->openOutput($target, 0);
+                $fh = $this->openOutput($state['cur']['tmp'], 0);
                 fclose($fh);
                 if ($e['size'] === 0) {
                     $this->finishFile($state['cur']);
@@ -783,7 +815,7 @@ final class ExtractJob implements JobHandler
                 }
                 return;
             case '2':
-                if (!self::linkStaysInside($rel, $e['link'])) {
+                if (!self::linkStaysInside($rel, $e['link']) || !self::resolvesInside(dirname($target) . '/' . $e['link'], $dest)) {
                     $ctx->audit->record('extract.skip_symlink', ['entry' => substr($rel, 0, 200)]);
                     return;
                 }
@@ -795,6 +827,9 @@ final class ExtractJob implements JobHandler
                 }
                 if (@symlink($e['link'], $target)) {
                     $state['fileCount']++;
+                    if (count($state['links']) < 100000) {
+                        $state['links'][] = $target;
+                    }
                 }
                 return;
             case '1':
@@ -803,8 +838,8 @@ final class ExtractJob implements JobHandler
                 } catch (AgentException $ex) {
                     return;
                 }
-                $from = $dest . '/' . $linkRel;
-                if (!is_file($from) || is_link($from) || ($exists && !$state['overwrite'])) {
+                $from = realpath($dest . '/' . $linkRel);
+                if ($from === false || !PathJail::isInside($from, $dest) || !is_file($from) || ($exists && !$state['overwrite'])) {
                     return;
                 }
                 if (is_link($target)) {
@@ -820,17 +855,24 @@ final class ExtractJob implements JobHandler
     }
 
     /** Creates the entry's parent directories inside $dest, refusing to traverse symlinks. */
-    private function ensureParents(Context $ctx, string $dest, string $rel): void
+    /** @param array<string, mixed> $state */
+    private function ensureParents(Context $ctx, array $state, string $rel): void
     {
+        $dest = $state['dest'];
         $segs = explode('/', $rel);
         array_pop($segs);
         $cur = $dest;
         foreach ($segs as $seg) {
             $cur .= '/' . $seg;
             if (is_link($cur)) {
-                // A symlinked directory is only traversed when it resolves inside the jail.
+                // A symlinked directory is traversed only when it resolves inside destDir, or, for a
+                // symlink that existed before this extraction (e.g. a relocated uploads dir), inside
+                // the allowed roots. Links created from the archive itself never lead outside destDir.
                 $real = realpath($cur);
-                if ($real === false || !is_dir($real) || !$ctx->jail->isWithinRoots($real) || $ctx->jail->isForbidden($real)) {
+                $ok = $real !== false && is_dir($real) && !$ctx->jail->isForbidden($real)
+                    && (PathJail::isInside($real, $dest)
+                        || (!in_array($cur, $state['links'], true) && $ctx->jail->isWithinRoots($real)));
+                if (!$ok) {
                     throw AgentException::jail('archive entry would be written through a symlink');
                 }
                 continue;
@@ -871,6 +913,30 @@ final class ExtractJob implements JobHandler
         return true;
     }
 
+    /**
+     * Resolves $path like the kernel would (realpath of the longest existing prefix, lexical for the
+     * rest) and checks it stays inside $base.
+     */
+    public static function resolvesInside(string $path, string $base): bool
+    {
+        $parts = explode('/', $path);
+        $tail = [];
+        while ($parts !== []) {
+            $prefix = implode('/', $parts);
+            $real = $prefix === '' ? '/' : realpath($prefix);
+            if ($real !== false) {
+                try {
+                    $full = PathJail::normalize($real . '/' . implode('/', $tail));
+                } catch (AgentException $e) {
+                    return false;
+                }
+                return PathJail::isInside($full, $base);
+            }
+            array_unshift($tail, (string) array_pop($parts));
+        }
+        return false;
+    }
+
     /** @return resource */
     private function openOutput(string $abs, int $offset)
     {
@@ -891,8 +957,15 @@ final class ExtractJob implements JobHandler
     /** @param array<string, mixed> $cur */
     private function finishFile(array $cur): void
     {
-        @chmod($cur['abs'], $cur['mode']);
-        @touch($cur['abs'], max(0, (int) $cur['mtime']));
+        @chmod($cur['tmp'], $cur['mode']);
+        @touch($cur['tmp'], max(0, (int) $cur['mtime']));
+        if (is_link($cur['abs'])) {
+            @unlink($cur['abs']);
+        }
+        if (!@rename($cur['tmp'], $cur['abs'])) {
+            @unlink($cur['tmp']);
+            throw AgentException::internal('cannot move extracted file into place');
+        }
     }
 
     public function progress(array $state): array
@@ -1208,11 +1281,11 @@ final class ImportJob implements JobHandler
     private function execute(Connection $db, string $sql, array &$state): void
     {
         $head = self::head($sql);
-        if (preg_match('/^(USE\s|CREATE\s+(DATABASE|SCHEMA)\b|DROP\s+(DATABASE|SCHEMA)\b)/i', $head) === 1) {
+        if (preg_match('/^(USE\b|CREATE\s+(DATABASE|SCHEMA)\b|DROP\s+(DATABASE|SCHEMA)\b)/i', $head) === 1) {
             $state['skipped']++;
             return;
         }
-        if (preg_match('/^CREATE\s/i', $head) === 1) {
+        if (preg_match('/^CREATE\b/i', $head) === 1) {
             $prefix = substr($sql, 0, 600);
             if (stripos($prefix, 'DEFINER') !== false) {
                 // The site's DB user usually lacks SUPER/SET USER: create objects as itself.
@@ -1586,7 +1659,9 @@ final class SiteActions
                 fseek($fh, $offset);
                 $data = (string) fread($fh, min($max, $size - $offset));
                 if ($offset + strlen($data) < $size) {
-                    $data = self::trimPartialUtf8($data);
+                    $trimmed = self::trimPartialUtf8($data);
+                    // Never return nothing when there is data (tiny maxBytes): progress beats tidiness.
+                    $data = $trimmed === '' ? $data : $trimmed;
                 }
             }
         } finally {
@@ -1863,11 +1938,12 @@ final class Agent
         }
     }
 
-    private static function readBody(int $max): string
+    /** The raw body, or null when it exceeds $max (the request then fails verification step 2). */
+    private static function readBody(int $max): ?string
     {
         $len = isset($_SERVER['CONTENT_LENGTH']) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
         if ($len > $max) {
-            return str_repeat(' ', $max + 1); // forces the size check to fail without reading
+            return null;
         }
         $fh = @fopen('php://input', 'rb');
         if ($fh === false) {
@@ -1875,16 +1951,17 @@ final class Agent
         }
         $body = (string) stream_get_contents($fh, $max + 1);
         fclose($fh);
-        return $body;
+        return strlen($body) > $max ? null : $body;
     }
 
     /**
      * Verifies and handles one web request.
      *
      * @param array<string, mixed> $server $_SERVER-like array
+     * @param string|null $body null when the body exceeded the size cap
      * @return array{0: int, 1: string}|BridgeRequest [HTTP status, body]; 404 means "empty 404"
      */
-    public function handleWeb(array $server, string $body)
+    public function handleWeb(array $server, ?string $body)
     {
         $headers = [];
         foreach ($server as $k => $v) {
@@ -1901,6 +1978,9 @@ final class Agent
             $this->ctx->clock
         );
         try {
+            if ($body === null) {
+                throw new AuthFailure('body_too_large');
+            }
             $keyId = $verifier->verify($method, $path, $headers, $body, $ip);
         } catch (AuthFailure $e) {
             $this->ctx->audit->record('auth_failed', ['ip' => $ip, 'reason' => $e->getReason()]);
@@ -2255,20 +2335,29 @@ final class GzipReader implements ByteSource
 // ---- src/Archive/GzipWriter.php
 namespace AutoWp\Agent\Archive {
 use AutoWp\Agent\AgentException;
+use AutoWp\Agent\Fs\FsUtil;
 
 /**
- * Appends one gzip member per writer session. A job that runs over several requests opens a new writer
- * per slice; the result is a valid multi-member gzip file (RFC 1952) that gzip/tar/zlib read as one stream.
- * The file is truncated back to `$resumeAt` first, so a slice that died half-way is simply redone.
+ * Writes gzip members (RFC 1952). A job that runs over several requests opens a new writer per slice,
+ * and a writer also starts a new member every MEMBER_BYTES of input; the result is a valid multi-member
+ * gzip file that gzip/tar/zlib read as one stream, and that GzipReader can resume from cheaply (it only
+ * has to re-inflate from the start of the current member). The file is truncated back to `$resumeAt`
+ * first, so a slice that died half-way is simply redone.
  */
 final class GzipWriter implements ByteSink
 {
+    public const MEMBER_BYTES = 33554432;
+
     /** @var resource */
     private $fh;
     /** @var resource|\DeflateContext */
     private $ctx;
     /** @var int */
+    private $level;
+    /** @var int */
     private $written = 0;
+    /** @var int input bytes in the current member */
+    private $inMember = 0;
     /** @var bool */
     private $closed = false;
 
@@ -2284,13 +2373,19 @@ final class GzipWriter implements ByteSink
             fclose($fh);
             throw AgentException::internal('cannot reposition output file');
         }
-        $ctx = deflate_init(ZLIB_ENCODING_GZIP, ['level' => $level]);
+        $this->fh = $fh;
+        $this->level = $level;
+        $this->ctx = $this->newContext();
+    }
+
+    /** @return resource|\DeflateContext */
+    private function newContext()
+    {
+        $ctx = deflate_init(ZLIB_ENCODING_GZIP, ['level' => $this->level]);
         if ($ctx === false) {
-            fclose($fh);
             throw AgentException::internal('deflate_init failed');
         }
-        $this->fh = $fh;
-        $this->ctx = $ctx;
+        return $ctx;
     }
 
     public function write(string $data): void
@@ -2299,11 +2394,17 @@ final class GzipWriter implements ByteSink
             return;
         }
         $this->written += strlen($data);
+        $this->inMember += strlen($data);
         $out = deflate_add($this->ctx, $data, ZLIB_NO_FLUSH);
         if ($out === false) {
             throw AgentException::internal('deflate failed');
         }
-        $this->put($out);
+        FsUtil::writeAll($this->fh, $out);
+        if ($this->inMember >= self::MEMBER_BYTES) {
+            $this->finishMember();
+            $this->ctx = $this->newContext();
+            $this->inMember = 0;
+        }
     }
 
     /** Finishes the gzip member and returns the compressed file size. */
@@ -2313,34 +2414,26 @@ final class GzipWriter implements ByteSink
             throw AgentException::internal('writer already closed');
         }
         $this->closed = true;
-        $out = deflate_add($this->ctx, '', ZLIB_FINISH);
-        if ($out === false) {
-            throw AgentException::internal('deflate failed');
-        }
-        $this->put($out);
+        $this->finishMember();
         fflush($this->fh);
         $size = (int) ftell($this->fh);
         fclose($this->fh);
         return $size;
     }
 
+    private function finishMember(): void
+    {
+        $out = deflate_add($this->ctx, '', ZLIB_FINISH);
+        if ($out === false) {
+            throw AgentException::internal('deflate failed');
+        }
+        FsUtil::writeAll($this->fh, $out);
+    }
+
     /** Uncompressed bytes written in this session. */
     public function uncompressedBytes(): int
     {
         return $this->written;
-    }
-
-    private function put(string $bytes): void
-    {
-        $len = strlen($bytes);
-        $off = 0;
-        while ($off < $len) {
-            $n = fwrite($this->fh, $off === 0 ? $bytes : substr($bytes, $off));
-            if ($n === false || $n === 0) {
-                throw AgentException::internal('write failed (disk full?)');
-            }
-            $off += $n;
-        }
     }
 }
 }
@@ -2830,6 +2923,9 @@ namespace AutoWp\Agent {
  */
 final class AuditLog
 {
+    /** Rotate (keep one previous file) beyond this size, so log floods cannot fill the disk. */
+    public const MAX_BYTES = 8388608;
+
     /** @var string */
     private $file;
     /** @var callable(): int */
@@ -2857,7 +2953,15 @@ final class AuditLog
                 return;
             }
             $size = fstat($fh)['size'];
-            if ($size === 0) {
+            if ($size > self::MAX_BYTES) {
+                $prevHash = $this->lastLineHash($fh, $size);
+                @copy($this->file, preg_replace('/\.php$/', '', $this->file) . '.1.php');
+                ftruncate($fh, 0);
+                rewind($fh);
+                fwrite($fh, DataDir::HEADER);
+                $size = 0;
+                $prev = $prevHash;
+            } elseif ($size === 0) {
                 fwrite($fh, DataDir::HEADER);
                 $prev = str_repeat('0', 64);
             } else {
@@ -3258,7 +3362,7 @@ final class Context
         }
         $forbidden = [$config->dataDir];
         // The agent's own directory is off-limits when it is a dedicated one; otherwise just the file.
-        if (in_array(basename(dirname($agentFile)), ['auto-wp-agent', '.auto-wp'], true)) {
+        if (in_array(\AutoWp\Agent\Security\PathJail::baseName(dirname($agentFile)), ['auto-wp-agent', '.auto-wp'], true)) {
             $forbidden[] = dirname($agentFile);
         } else {
             $forbidden[] = $agentFile;
@@ -4479,7 +4583,7 @@ final class ExcludeMatcher
 
     public function excluded(string $rel, bool $isDir): bool
     {
-        $base = basename($rel);
+        $base = \AutoWp\Agent\Security\PathJail::baseName($rel);
         foreach ($this->rules as $r) {
             if ($r['dirOnly'] && !$isDir) {
                 continue;
@@ -5350,7 +5454,7 @@ final class NonceStore
     public function checkAndRecord(string $nonce, int $now): bool
     {
         $old = umask(0077);
-        $fh = @fopen($this->file, 'c+');
+        $fh = @fopen($this->file . '.lock', 'c');
         umask($old);
         if ($fh === false) {
             return false;
@@ -5359,7 +5463,7 @@ final class NonceStore
             if (!flock($fh, LOCK_EX)) {
                 return false;
             }
-            $raw = stream_get_contents($fh);
+            $raw = is_file($this->file) ? @file_get_contents($this->file) : '';
             $map = [];
             if (is_string($raw) && $raw !== '') {
                 $decoded = json_decode(DataDir::stripHeader($raw), true);
@@ -5370,7 +5474,9 @@ final class NonceStore
             }
             $fresh = [];
             foreach ($map as $n => $exp) {
-                if (is_int($exp) && $exp > $now) {
+                // Kept through the expiry second itself: TTL (600) is exactly 2 x the clock skew (300),
+                // so a nonce must still be known at ts+300 seen from a clock 300 s behind.
+                if (is_int($exp) && $exp >= $now) {
                     $fresh[(string) $n] = $exp;
                 }
             }
@@ -5385,13 +5491,12 @@ final class NonceStore
             if ($json === false) {
                 return false;
             }
-            ftruncate($fh, 0);
-            rewind($fh);
-            $data = DataDir::HEADER . $json;
-            if (fwrite($fh, $data) !== strlen($data)) {
+            // Atomic replace: a partial write (disk full, killed process) can never corrupt the store.
+            try {
+                DataDir::writeProtected($this->file, $json);
+            } catch (\Throwable $e) {
                 return false;
             }
-            fflush($fh);
             flock($fh, LOCK_UN);
             return true;
         } finally {
@@ -5470,7 +5575,7 @@ final class PathJail
             throw AgentException::jail();
         }
         $parent = $this->realish(dirname($abs));
-        $name = basename($abs);
+        $name = self::baseName($abs);
         $full = $parent === '/' ? '/' . $name : $parent . '/' . $name;
         $this->assertAllowed($full);
         // A symlink final component must not point at a forbidden location either.
@@ -5545,7 +5650,7 @@ final class PathJail
         $cur = $abs;
         while (true) {
             $parent = dirname($cur);
-            array_unshift($tail, basename($cur));
+            array_unshift($tail, self::baseName($cur));
             if ($parent === $cur) {
                 throw AgentException::jail();
             }
@@ -5578,6 +5683,14 @@ final class PathJail
         if ($this->isForbidden($real)) {
             throw AgentException::jail('path is reserved for the agent');
         }
+    }
+
+    /** Byte-safe basename (PHP 7's basename() is locale-dependent and can mangle UTF-8 names). */
+    public static function baseName(string $path): string
+    {
+        $path = rtrim($path, '/');
+        $p = strrpos($path, '/');
+        return $p === false ? $path : (string) substr($path, $p + 1);
     }
 
     public static function isInside(string $path, string $root): bool

@@ -84,11 +84,11 @@ final class ImportJob implements JobHandler
     private function execute(Connection $db, string $sql, array &$state): void
     {
         $head = self::head($sql);
-        if (preg_match('/^(USE\s|CREATE\s+(DATABASE|SCHEMA)\b|DROP\s+(DATABASE|SCHEMA)\b)/i', $head) === 1) {
+        if (preg_match('/^(USE\b|CREATE\s+(DATABASE|SCHEMA)\b|DROP\s+(DATABASE|SCHEMA)\b)/i', $head) === 1) {
             $state['skipped']++;
             return;
         }
-        if (preg_match('/^CREATE\s/i', $head) === 1) {
+        if (preg_match('/^CREATE\b/i', $head) === 1) {
             $prefix = substr($sql, 0, 600);
             if (stripos($prefix, 'DEFINER') !== false) {
                 // The site's DB user usually lacks SUPER/SET USER: create objects as itself.

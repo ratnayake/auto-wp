@@ -32,7 +32,7 @@ final class NonceStore
     public function checkAndRecord(string $nonce, int $now): bool
     {
         $old = umask(0077);
-        $fh = @fopen($this->file, 'c+');
+        $fh = @fopen($this->file . '.lock', 'c');
         umask($old);
         if ($fh === false) {
             return false;
@@ -41,7 +41,7 @@ final class NonceStore
             if (!flock($fh, LOCK_EX)) {
                 return false;
             }
-            $raw = stream_get_contents($fh);
+            $raw = is_file($this->file) ? @file_get_contents($this->file) : '';
             $map = [];
             if (is_string($raw) && $raw !== '') {
                 $decoded = json_decode(DataDir::stripHeader($raw), true);
@@ -52,7 +52,9 @@ final class NonceStore
             }
             $fresh = [];
             foreach ($map as $n => $exp) {
-                if (is_int($exp) && $exp > $now) {
+                // Kept through the expiry second itself: TTL (600) is exactly 2 x the clock skew (300),
+                // so a nonce must still be known at ts+300 seen from a clock 300 s behind.
+                if (is_int($exp) && $exp >= $now) {
                     $fresh[(string) $n] = $exp;
                 }
             }
@@ -67,13 +69,12 @@ final class NonceStore
             if ($json === false) {
                 return false;
             }
-            ftruncate($fh, 0);
-            rewind($fh);
-            $data = DataDir::HEADER . $json;
-            if (fwrite($fh, $data) !== strlen($data)) {
+            // Atomic replace: a partial write (disk full, killed process) can never corrupt the store.
+            try {
+                DataDir::writeProtected($this->file, $json);
+            } catch (\Throwable $e) {
                 return false;
             }
-            fflush($fh);
             flock($fh, LOCK_UN);
             return true;
         } finally {

@@ -10,6 +10,9 @@ namespace AutoWp\Agent;
  */
 final class AuditLog
 {
+    /** Rotate (keep one previous file) beyond this size, so log floods cannot fill the disk. */
+    public const MAX_BYTES = 8388608;
+
     /** @var string */
     private $file;
     /** @var callable(): int */
@@ -37,7 +40,15 @@ final class AuditLog
                 return;
             }
             $size = fstat($fh)['size'];
-            if ($size === 0) {
+            if ($size > self::MAX_BYTES) {
+                $prevHash = $this->lastLineHash($fh, $size);
+                @copy($this->file, preg_replace('/\.php$/', '', $this->file) . '.1.php');
+                ftruncate($fh, 0);
+                rewind($fh);
+                fwrite($fh, DataDir::HEADER);
+                $size = 0;
+                $prev = $prevHash;
+            } elseif ($size === 0) {
                 fwrite($fh, DataDir::HEADER);
                 $prev = str_repeat('0', 64);
             } else {

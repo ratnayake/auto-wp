@@ -71,7 +71,7 @@ final class PathJail
             throw AgentException::jail();
         }
         $parent = $this->realish(dirname($abs));
-        $name = basename($abs);
+        $name = self::baseName($abs);
         $full = $parent === '/' ? '/' . $name : $parent . '/' . $name;
         $this->assertAllowed($full);
         // A symlink final component must not point at a forbidden location either.
@@ -146,7 +146,7 @@ final class PathJail
         $cur = $abs;
         while (true) {
             $parent = dirname($cur);
-            array_unshift($tail, basename($cur));
+            array_unshift($tail, self::baseName($cur));
             if ($parent === $cur) {
                 throw AgentException::jail();
             }
@@ -179,6 +179,14 @@ final class PathJail
         if ($this->isForbidden($real)) {
             throw AgentException::jail('path is reserved for the agent');
         }
+    }
+
+    /** Byte-safe basename (PHP 7's basename() is locale-dependent and can mangle UTF-8 names). */
+    public static function baseName(string $path): string
+    {
+        $path = rtrim($path, '/');
+        $p = strrpos($path, '/');
+        return $p === false ? $path : (string) substr($path, $p + 1);
     }
 
     public static function isInside(string $path, string $root): bool

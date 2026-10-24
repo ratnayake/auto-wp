@@ -80,11 +80,12 @@ final class Agent
         }
     }
 
-    private static function readBody(int $max): string
+    /** The raw body, or null when it exceeds $max (the request then fails verification step 2). */
+    private static function readBody(int $max): ?string
     {
         $len = isset($_SERVER['CONTENT_LENGTH']) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
         if ($len > $max) {
-            return str_repeat(' ', $max + 1); // forces the size check to fail without reading
+            return null;
         }
         $fh = @fopen('php://input', 'rb');
         if ($fh === false) {
@@ -92,16 +93,17 @@ final class Agent
         }
         $body = (string) stream_get_contents($fh, $max + 1);
         fclose($fh);
-        return $body;
+        return strlen($body) > $max ? null : $body;
     }
 
     /**
      * Verifies and handles one web request.
      *
      * @param array<string, mixed> $server $_SERVER-like array
+     * @param string|null $body null when the body exceeded the size cap
      * @return array{0: int, 1: string}|BridgeRequest [HTTP status, body]; 404 means "empty 404"
      */
-    public function handleWeb(array $server, string $body)
+    public function handleWeb(array $server, ?string $body)
     {
         $headers = [];
         foreach ($server as $k => $v) {
@@ -118,6 +120,9 @@ final class Agent
             $this->ctx->clock
         );
         try {
+            if ($body === null) {
+                throw new AuthFailure('body_too_large');
+            }
             $keyId = $verifier->verify($method, $path, $headers, $body, $ip);
         } catch (AuthFailure $e) {
             $this->ctx->audit->record('auth_failed', ['ip' => $ip, 'reason' => $e->getReason()]);
