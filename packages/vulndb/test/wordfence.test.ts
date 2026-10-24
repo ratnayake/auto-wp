@@ -1,9 +1,9 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FakeClock, MemoryLogger } from '@auto-wp/contracts/fakes';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TopLevelValueSplitter } from '../src/json-stream.js';
-import { WordfenceProvider } from '../src/wordfence.js';
+import { type WordfenceOptions, WordfenceProvider } from '../src/wordfence.js';
 import { startServer, type TestServer, tmpCache } from './helpers.js';
 
 const feedPath = new URL('./fixtures/wordfence-feed.json', import.meta.url);
@@ -33,14 +33,23 @@ async function feedServer(opts: { status?: () => number } = {}) {
   return srv;
 }
 
-const make = async (url: string, clock = new FakeClock()) => {
+const make = async (url: string, clock = new FakeClock(), extra: Partial<WordfenceOptions> = {}) => {
   const cacheDir = await tmpCache();
   const logger = new MemoryLogger();
   return {
     cacheDir,
     clock,
     logger,
-    mk: () => new WordfenceProvider({ apiKey: 'k', cacheDir, clock, logger, feedUrl: `${url}/feed` }),
+    mk: () =>
+      new WordfenceProvider({
+        apiKey: 'k',
+        cacheDir,
+        clock,
+        logger,
+        feedUrl: `${url}/feed`,
+        minRecords: 1,
+        ...extra,
+      }),
   };
 };
 
@@ -118,6 +127,64 @@ describe('WordfenceProvider', () => {
 
     const fresh = await make(s.url);
     await expect(fresh.mk().lookup('plugin', 'x')).rejects.toThrow(/Wordfence feed unavailable: HTTP 503/);
+  });
+});
+
+describe('feed validation and staleness', () => {
+  const serve = async (get: () => string | Buffer) => {
+    srv = await startServer((_req, res) => {
+      res.writeHead(200, { ETag: '"bad"' }).end(get());
+    });
+    return srv;
+  };
+
+  it('rejects truncated, empty and too-small feeds and keeps the old cache', async () => {
+    const good = await readFile(feedPath, 'utf8');
+    let body = good;
+    const s = await serve(() => body);
+    const { mk, clock, cacheDir } = await make(s.url);
+    await mk().lookup('plugin', 'x');
+    const before = await readFile(join(cacheDir, 'wordfence-v3.json'), 'utf8');
+    clock.advance(25 * 3600_000);
+
+    for (const bad of [good.slice(0, good.length - 40), '{}', '', '<html>']) {
+      body = bad;
+      const p = mk();
+      // stale index still served (and flagged), never replaced
+      expect(await p.lookup('plugin', 'contact-form-7')).toHaveLength(2);
+      expect(p.staleNotice()).toMatch(/^using stale Wordfence data from /);
+      expect(await readFile(join(cacheDir, 'wordfence-v3.json'), 'utf8')).toBe(before);
+    }
+    const strict = new WordfenceProvider({
+      apiKey: 'k',
+      cacheDir,
+      clock,
+      feedUrl: `${s.url}/feed`,
+      minRecords: 100,
+    });
+    body = good;
+    expect(await strict.lookup('plugin', 'contact-form-7')).toHaveLength(2);
+    expect(strict.staleNotice()).toBeDefined(); // 6 records < 100 -> refused
+  });
+
+  it('treats an index older than maxStale as unavailable', async () => {
+    let status = 200;
+    const s = await feedServer({ status: () => status });
+    const { mk, clock } = await make(s.url);
+    await mk().lookup('plugin', 'x');
+    status = 503;
+    clock.advance(8 * 24 * 3600_000);
+    await expect(mk().lookup('plugin', 'x')).rejects.toThrow(/unavailable/);
+  });
+
+  it('discards a malformed cache file', async () => {
+    const s = await feedServer();
+    const { mk, cacheDir } = await make(s.url);
+    await writeFile(
+      join(cacheDir, 'wordfence-v3.json'),
+      JSON.stringify({ schemaVersion: 1, fetchedAt: new Date(0).toISOString(), index: null }),
+    );
+    expect(await mk().lookup('plugin', 'contact-form-7')).toHaveLength(2);
   });
 });
 

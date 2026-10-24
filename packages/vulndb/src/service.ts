@@ -6,7 +6,7 @@ import type {
   VulnProvider,
   VulnService,
 } from '@auto-wp/contracts';
-import { inAnyRange } from './version.js';
+import { inAnyRange, versionCompare } from './version.js';
 
 export const WORDFENCE_ATTRIBUTION =
   'Vulnerability data provided by Wordfence Intelligence (https://www.wordfence.com/threat-intel/). ' +
@@ -29,11 +29,21 @@ const normTitle = (t: string): string =>
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
-/** Merges duplicates (same CVE, else same normalised title), unioning their affected ranges. */
+const rangesSig = (v: Vulnerability): string =>
+  v.affected
+    .map((r) => JSON.stringify([r.from, r.fromInclusive, r.to, r.toInclusive]))
+    .sort()
+    .join('|');
+
+/**
+ * Merges duplicates of ONE item's vulnerabilities (so type+slug are implicitly equal): same CVE always
+ * merges (ranges unioned, worst CVSS and highest fixedIn kept); without a CVE only an identical
+ * normalised title AND identical affected ranges merge, since generic titles recur across distinct bugs.
+ */
 export function dedupe(vulns: Vulnerability[]): Vulnerability[] {
   const byKey = new Map<string, Vulnerability>();
   for (const v of vulns) {
-    const key = v.cve ? `cve:${v.cve.toUpperCase()}` : `title:${normTitle(v.title)}`;
+    const key = v.cve ? `cve:${v.cve.toUpperCase()}` : `title:${normTitle(v.title)}:${rangesSig(v)}`;
     const prev = byKey.get(key);
     if (!prev) {
       byKey.set(key, { ...v, affected: [...v.affected], references: [...v.references] });
@@ -42,11 +52,14 @@ export function dedupe(vulns: Vulnerability[]): Vulnerability[] {
     const seen = new Set(prev.affected.map((r) => JSON.stringify(r)));
     for (const r of v.affected) if (!seen.has(JSON.stringify(r))) prev.affected.push(r);
     for (const ref of v.references) if (!prev.references.includes(ref)) prev.references.push(ref);
-    prev.cvss ??= v.cvss;
-    prev.fixedIn ??= v.fixedIn;
+    if (v.cvss && (!prev.cvss || v.cvss.score > prev.cvss.score)) prev.cvss = v.cvss;
+    if (v.fixedIn && (!prev.fixedIn || versionCompare(v.fixedIn, prev.fixedIn) > 0)) prev.fixedIn = v.fixedIn;
   }
   return [...byKey.values()];
 }
+
+/** Local extension of ItemVulnAssessment (contracts PR #14 adds this field upstream). */
+export type AssessmentWithFailure = ItemVulnAssessment & { lookupFailed: { old: boolean; new: boolean } };
 
 export class DefaultVulnService implements VulnService {
   private readonly used = new Set<VulnProvider['name']>();
@@ -57,11 +70,11 @@ export class DefaultVulnService implements VulnService {
     private readonly logger?: Logger,
   ) {}
 
-  async assess(items: UpdateItem[]): Promise<ItemVulnAssessment[]> {
+  async assess(items: UpdateItem[]): Promise<AssessmentWithFailure[]> {
     return Promise.all(items.map((item) => this.assessItem(item)));
   }
 
-  private async assessItem(item: UpdateItem): Promise<ItemVulnAssessment> {
+  private async assessItem(item: UpdateItem): Promise<AssessmentWithFailure> {
     const errors: string[] = [];
     const sources: string[] = [];
     let vulns: Vulnerability[] = [];
@@ -70,6 +83,8 @@ export class DefaultVulnService implements VulnService {
         const hint = { versions: [item.currentVersion, item.newVersion] };
         vulns = await (p as HintedProvider).lookup(item.type, item.slug, hint);
         sources.push(p.name);
+        const notice = (p as { staleNotice?: () => string | undefined }).staleNotice?.();
+        if (notice) errors.push(`${p.name}: ${notice}`);
         this.used.add(p.name);
         break; // an empty result is an answer; only errors fall through to the next provider
       } catch (err) {
@@ -85,6 +100,7 @@ export class DefaultVulnService implements VulnService {
       stillAffectingNew: merged.filter((v) => inAnyRange(item.newVersion, v.affected)),
       sources,
       errors,
+      lookupFailed: { old: sources.length === 0, new: sources.length === 0 },
     };
   }
 

@@ -98,22 +98,48 @@ describe('DefaultVulnService', () => {
     expect(svc.attributions()).toEqual([]);
   });
 
-  it('dedupes by CVE, else by normalised title, merging ranges', async () => {
+  it('dedupes by CVE; title-only merges need identical ranges', async () => {
+    const r = (to: string) => [{ from: '*', fromInclusive: true, to, toInclusive: false }];
     const wf = provider('wordfence', async () => [
-      vuln({ id: '1', cve: 'CVE-2024-1', title: 'A' }),
+      vuln({
+        id: '1',
+        cve: 'CVE-2024-1',
+        title: 'A',
+        fixedIn: '5.8.4',
+        cvss: { score: 5, rating: 'Medium' },
+      }),
       vuln({
         id: '2',
         cve: 'cve-2024-1',
         title: 'B',
+        fixedIn: '5.9.1',
+        cvss: { score: 9, rating: 'Critical' },
         affected: [{ from: '7', fromInclusive: true, to: '8', toInclusive: true }],
       }),
-      vuln({ id: '3', title: 'Cross-Site  Scripting!' }),
-      vuln({ id: '4', title: 'cross site scripting' }),
-      vuln({ id: '5', title: 'Different' }),
+      vuln({ id: '3', title: 'Cross-Site  Scripting!', affected: r('5.9') }),
+      vuln({ id: '4', title: 'cross site scripting', affected: r('5.9') }),
+      vuln({ id: '5', title: 'Cross Site Scripting', affected: r('5.9.5') }),
+      vuln({ id: '6', title: 'Different', affected: r('5.9') }),
     ]);
     const [a] = await new DefaultVulnService([wf]).assess([item()]);
-    expect(a?.affectingOld.map((v) => v.id)).toEqual(['1', '3', '5']);
+    expect(a?.affectingOld.map((v) => v.id)).toEqual(['1', '3', '5', '6']);
+    expect(a?.affectingOld[0]).toMatchObject({ fixedIn: '5.9.1', cvss: { score: 9 } });
     expect(a?.affectingOld[0]?.affected).toHaveLength(2);
+  });
+
+  it('surfaces stale Wordfence data in errors and sets lookupFailed', async () => {
+    const stale = Object.assign(
+      provider('wordfence', async () => []),
+      { staleNotice: () => 'using stale Wordfence data from 2026-01-01' },
+    );
+    const [a] = await new DefaultVulnService([stale]).assess([item()]);
+    expect(a?.errors).toEqual(['wordfence: using stale Wordfence data from 2026-01-01']);
+    expect(a?.lookupFailed).toEqual({ old: false, new: false });
+    const down = provider('wordfence', async () => {
+      throw new Error('x');
+    });
+    const [b] = await new DefaultVulnService([down]).assess([item()]);
+    expect(b?.lookupFailed).toEqual({ old: true, new: true });
   });
 
   it('returns attributions only for providers used', async () => {

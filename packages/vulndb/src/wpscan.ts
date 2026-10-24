@@ -93,11 +93,13 @@ export class WpscanProvider implements VulnProvider {
   }
 
   private async doLookup(type: ItemType, slug: string, hint?: { versions?: string[] }) {
-    if (type !== 'core') return this.fetchPath(`${type === 'plugin' ? 'plugins' : 'themes'}/${slug}`);
+    if (type !== 'core')
+      return this.fetchPath(`${type === 'plugin' ? 'plugins' : 'themes'}/${encodeURIComponent(slug)}`);
     const versions = [...new Set(hint?.versions ?? [])];
     if (versions.length === 0) throw new Error('WPScan core lookup needs a WordPress version');
     const all: Vulnerability[] = [];
-    for (const v of versions) all.push(...(await this.fetchPath(`wordpresses/${v.replaceAll('.', '')}`)));
+    for (const v of versions)
+      all.push(...(await this.fetchPath(`wordpresses/${encodeURIComponent(v.replaceAll('.', ''))}`)));
     return all;
   }
 

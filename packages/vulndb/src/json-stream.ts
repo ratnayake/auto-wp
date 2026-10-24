@@ -7,6 +7,12 @@ export class TopLevelValueSplitter {
   private inString = false;
   private escape = false;
   private buf: string[] = [];
+  private sawOpen = false;
+
+  /** True once the top-level container was opened and properly closed (not truncated). */
+  isComplete(): boolean {
+    return this.sawOpen && this.depth === 0 && !this.inString;
+  }
 
   /** Feeds a text chunk; calls `emit` with the raw JSON text of each completed child container. */
   push(chunk: string, emit: (raw: string) => void): void {
@@ -22,6 +28,7 @@ export class TopLevelValueSplitter {
       if (c === 34) this.inString = true;
       else if (c === 123 || c === 91) {
         this.depth++;
+        this.sawOpen = true;
         if (this.depth === 2) start = i;
       } else if (c === 125 || c === 93) {
         this.depth--;

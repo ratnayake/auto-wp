@@ -16,7 +16,15 @@ export interface WordfenceOptions {
   feedUrl?: string;
   fetch?: Fetch;
   refreshMs?: number;
+  /** Refuse a feed with fewer records than this (guards against truncated/empty downloads). */
+  minRecords?: number;
+  /** Past this age a failed refresh makes the index unavailable (so fallbacks engage). */
+  maxStaleMs?: number;
 }
+
+export const DEFAULT_MIN_RECORDS = 1000;
+export const DEFAULT_MAX_STALE_MS = 7 * DAY_MS;
+const RETRY_BACKOFF_MS = 10 * 60_000;
 
 interface CacheFile {
   schemaVersion: 1;
@@ -103,6 +111,9 @@ export class WordfenceProvider implements VulnProvider {
   private readonly refreshMs: number;
   private cache?: CacheFile;
   private loading?: Promise<CacheFile>;
+  private stale = false;
+  private failedAt?: number;
+  private lastError = '';
 
   constructor(private readonly opts: WordfenceOptions) {
     this.url = opts.feedUrl ?? process.env.AUTOWP_WORDFENCE_FEED_URL ?? DEFAULT_WORDFENCE_FEED_URL;
@@ -127,18 +138,49 @@ export class WordfenceProvider implements VulnProvider {
     return this.loading;
   }
 
+  /** Set when the last load had to fall back to an old index; the service surfaces it in `errors`. */
+  staleNotice(): string | undefined {
+    return this.stale && this.cache
+      ? `using stale Wordfence data from ${this.cache.fetchedAt.slice(0, 10)}`
+      : undefined;
+  }
+
   private async load(): Promise<CacheFile> {
-    this.cache ??= await readJson<CacheFile>(this.cachePath);
-    if (this.cache?.schemaVersion !== 1) this.cache = undefined;
-    if (this.cache && this.fresh(this.cache)) return this.cache;
+    if (!this.cache) {
+      const disk = await readJson<CacheFile>(this.cachePath);
+      if (
+        disk?.schemaVersion === 1 &&
+        disk.index &&
+        typeof disk.index === 'object' &&
+        !Array.isArray(disk.index)
+      ) {
+        this.cache = disk;
+      }
+    }
+    if (this.cache && this.fresh(this.cache)) {
+      this.stale = false;
+      return this.cache;
+    }
+    const now = this.opts.clock.now().getTime();
     try {
-      return await this.refresh(this.cache);
+      if (this.failedAt !== undefined && now - this.failedAt < RETRY_BACKOFF_MS)
+        throw new Error(this.lastError);
+      const next = await this.refresh(this.cache);
+      this.stale = false;
+      this.failedAt = undefined;
+      return next;
     } catch (err) {
-      if (this.cache) {
+      if (this.failedAt === undefined || now - this.failedAt >= RETRY_BACKOFF_MS) {
+        this.failedAt = now;
+        this.lastError = (err as Error).message;
+      }
+      const maxStale = this.opts.maxStaleMs ?? DEFAULT_MAX_STALE_MS;
+      if (this.cache && now - Date.parse(this.cache.fetchedAt) <= maxStale) {
         this.opts.logger?.warn(
           { err: (err as Error).message },
           'wordfence feed refresh failed; using stale index',
         );
+        this.stale = true;
         return this.cache;
       }
       throw new Error(`Wordfence feed unavailable: ${(err as Error).message}`);
@@ -166,13 +208,18 @@ export class WordfenceProvider implements VulnProvider {
     const index: Record<string, Vulnerability[]> = {};
     const splitter = new TopLevelValueSplitter();
     const decoder = new TextDecoder();
+    let records = 0;
     const emit = (raw: string) => {
+      records++;
       for (const { key, vuln } of mapRecord(JSON.parse(raw) as WfRecord)) (index[key] ??= []).push(vuln);
     };
     for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
       splitter.push(decoder.decode(chunk, { stream: true }), emit);
     }
     splitter.push(decoder.decode(), emit);
+    const min = this.opts.minRecords ?? DEFAULT_MIN_RECORDS;
+    if (!splitter.isComplete()) throw new Error('feed truncated or not a JSON object/array');
+    if (records < min) throw new Error(`feed has ${records} records, expected at least ${min}`);
     const etag = res.headers.get('etag') ?? undefined;
     const next: CacheFile = { schemaVersion: 1, ...(etag ? { etag } : {}), fetchedAt: nowIso, index };
     await writeJsonAtomic(this.cachePath, next);

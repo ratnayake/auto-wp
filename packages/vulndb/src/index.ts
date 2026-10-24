@@ -1,6 +1,12 @@
 export { ProviderNotConfiguredError, QuotaExceededError } from './errors.js';
 export { PatchstackProvider } from './patchstack.js';
-export { DefaultVulnService, dedupe, WORDFENCE_ATTRIBUTION, WPSCAN_ATTRIBUTION } from './service.js';
+export {
+  type AssessmentWithFailure,
+  DefaultVulnService,
+  dedupe,
+  WORDFENCE_ATTRIBUTION,
+  WPSCAN_ATTRIBUTION,
+} from './service.js';
 export { inAnyRange, inRange, versionCompare } from './version.js';
 export {
   DEFAULT_WORDFENCE_FEED_URL,
