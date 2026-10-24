@@ -46,6 +46,7 @@ describe('SqlScanner', () => {
       'CREATE TABLE IF NOT EXISTS `a` (x int);CREATE TEMPORARY TABLE `b` (x int);create table c(x int);CREATE TABLE `d` LIKE `a`;CREATE TABLE `a` (x int);',
     );
     expect(r.createTables).toEqual(['a', 'b', 'c', 'd']);
+    expect(all('CREATE OR REPLACE TABLE `m` (x int);').createTables).toEqual(['m']);
   });
 
   it('is not fooled by ); and ),( inside strings', () => {

@@ -49,7 +49,7 @@ const SQ_RE = /['\\]/g;
 const DQ_RE = /["\\]/g;
 const BT_RE = /`/g;
 
-const CREATE_SKIP = new Set(['CREATE', 'TEMPORARY', 'TABLE', 'IF', 'NOT', 'EXISTS']);
+const CREATE_SKIP = new Set(['CREATE', 'OR', 'REPLACE', 'TEMPORARY', 'TABLE', 'IF', 'NOT', 'EXISTS']);
 const INSERT_SKIP = new Set([
   'INSERT',
   'REPLACE',

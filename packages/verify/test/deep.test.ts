@@ -74,6 +74,6 @@ describe('deep.restore', () => {
     await f.make({ dockerRunner: docker }).verify(SITE, f.conn, BACKUP_ID);
     expect(docker.calls).toHaveLength(0);
     const r = await f.verifier.verify(SITE, f.conn, BACKUP_ID, { deep: true });
-    expect(byName(r, 'deep.restore')?.details.skipped).toBeDefined();
+    expect(byName(r, 'deep.restore')).toMatchObject({ ok: false, severity: 'warn' });
   });
 });

@@ -264,7 +264,11 @@ export class DefaultBackupVerifier implements BackupVerifier {
       return;
     }
     if (!sig) {
-      checks.push(fail('manifest.signature', { error: 'manifest is not signed' }, 'warn'));
+      checks.push(
+        fail('manifest.signature', {
+          error: 'manifest is not signed but a signature verifier is configured',
+        }),
+      );
       return;
     }
     const valid = await verifier.verify(manifestBytes, sig);
@@ -336,7 +340,9 @@ export class DefaultBackupVerifier implements BackupVerifier {
       return;
     }
     if (artifact.encrypted) {
-      checks.push(pass('archive.integrity', { skipped: 'artifact is encrypted' }));
+      checks.push(
+        fail('archive.integrity', { skipped: 'artifact is encrypted; content not inspected' }, 'warn'),
+      );
       return;
     }
     const remotePath = s.remoteDir ? posix.join(s.remoteDir, artifact.name) : undefined;
@@ -361,7 +367,11 @@ export class DefaultBackupVerifier implements BackupVerifier {
       attempted = true;
       try {
         const r = await walkTarGz(createReadStream(localPath));
-        details.local = { ok: true, ...r };
+        // A tar cut at an entry boundary has a valid gzip wrapper but no end-of-archive marker.
+        details.local = r.endMarker
+          ? { ok: true, ...r }
+          : { ok: false, ...r, error: 'tar end-of-archive marker missing' };
+        ok &&= r.endMarker;
         localFiles = r.files;
       } catch (e) {
         details.local = { ok: false, error: errMsg(e) };
@@ -379,7 +389,11 @@ export class DefaultBackupVerifier implements BackupVerifier {
       checks.push(
         details.local
           ? fail('files.count', { error: 'archive unreadable', expected: manifest.files.count })
-          : pass('files.count', { skipped: 'no local copy of the archive', expected: manifest.files.count }),
+          : fail(
+              'files.count',
+              { skipped: 'no local copy of the archive', expected: manifest.files.count },
+              'warn',
+            ),
       );
     } else {
       const match = localFiles === manifest.files.count;
@@ -442,7 +456,7 @@ export class DefaultBackupVerifier implements BackupVerifier {
       return undefined;
     }
     if (artifact.encrypted) {
-      checks.push(pass('db.terminator', { skipped: 'artifact is encrypted' }));
+      checks.push(fail('db.terminator', { skipped: 'artifact is encrypted; content not inspected' }, 'warn'));
       return undefined;
     }
     let scan: SqlScanResult;
@@ -526,9 +540,14 @@ export class DefaultBackupVerifier implements BackupVerifier {
     scan: SqlScanResult | undefined,
   ): Promise<Check> {
     const runner = this.deps.dockerRunner;
-    if (!runner) return pass('deep.restore', { skipped: 'no docker runner configured' });
+    if (!runner)
+      return fail(
+        'deep.restore',
+        { skipped: 'deep drill requested but no docker runner configured' },
+        'warn',
+      );
     if (!artifact || artifact.encrypted)
-      return pass('deep.restore', { skipped: 'no readable database dump' });
+      return fail('deep.restore', { skipped: 'no readable database dump' }, 'warn');
     if (scan && (!scan.terminator || scan.truncated)) {
       return fail('deep.restore', { error: 'skipped: dump is incomplete' });
     }
@@ -553,7 +572,8 @@ export class DefaultBackupVerifier implements BackupVerifier {
       [];
     for (const t of manifest.db.tables) {
       const restored = outcome.counts.get(t.name);
-      const volatile = isVolatileTable(t.name, this.deps.volatileTablePatterns);
+      // A table that did not restore at all is a hard failure even if it is normally volatile.
+      const volatile = restored !== undefined && isVolatileTable(t.name, this.deps.volatileTablePatterns);
       const good = volatile
         ? restored !== undefined && withinTolerance(t.rows, restored, this.rowTol)
         : restored === t.rows;

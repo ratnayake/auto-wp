@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BACKUP_ID, byName, makeFixture, REMOTE_DIR, SITE } from './fixture.js';
+import { buildTar, gz, sha256 } from './helpers.js';
 
 describe('DefaultBackupVerifier', () => {
   it('passes a good backup, remote and local', async () => {
@@ -49,7 +50,7 @@ describe('DefaultBackupVerifier', () => {
     expect(r.ok).toBe(true);
     expect(byName(r, 'artifact.sha256:db.sql.gz')?.details.local).toBe('absent');
     expect(f.conn.ops.some((o) => o.op === 'download')).toBe(true);
-    expect(byName(r, 'files.count')?.details.skipped).toBeDefined();
+    expect(byName(r, 'files.count')).toMatchObject({ ok: false, severity: 'warn' });
   });
 
   it('verifies a local-only backup (remote gone)', async () => {
@@ -97,11 +98,11 @@ describe('DefaultBackupVerifier', () => {
       expect(r.ok).toBe(false);
     });
 
-    it('is only a warning when a verifier is given but the manifest is unsigned, and absent without one', async () => {
+    it('is an error when a verifier is given but the manifest is unsigned, and absent without one', async () => {
       const f = await makeFixture();
       const r = await f.make({ signatureVerifier: { verify: () => true } }).verify(SITE, f.conn, BACKUP_ID);
-      expect(byName(r, 'manifest.signature')).toMatchObject({ ok: false, severity: 'warn' });
-      expect(r.ok).toBe(true);
+      expect(byName(r, 'manifest.signature')).toMatchObject({ ok: false, severity: 'error' });
+      expect(r.ok).toBe(false);
       expect(byName(await f.verifier.verify(SITE, f.conn, BACKUP_ID), 'manifest.signature')).toBeUndefined();
     });
   });
@@ -183,6 +184,24 @@ describe('DefaultBackupVerifier', () => {
       }));
       const bad = await f.verifier.verify(SITE, f.conn, BACKUP_ID);
       expect(byName(bad, 'archive.integrity')?.ok).toBe(false);
+    });
+
+    it('fails integrity when the tar has no end-of-archive marker (cut at an entry boundary)', async () => {
+      const cut = gz(buildTar([{ name: 'a.txt', data: 'hi' }], false));
+      const f = await makeFixture({ files: ['a.txt'], mutateFiles: () => cut });
+      const m = {
+        ...f.manifest,
+        artifacts: f.manifest.artifacts.map((a) =>
+          a.name === 'files.tar.gz' ? { ...a, bytes: cut.length, sha256: sha256(cut) } : a,
+        ),
+      };
+      const bytes = Buffer.from(JSON.stringify(m));
+      f.conn.seed({ [`${REMOTE_DIR}/manifest.json`]: bytes });
+      await writeFile(join(f.localDir, 'manifest.json'), bytes);
+      const r = await f.verifier.verify(SITE, f.conn, BACKUP_ID);
+      expect(byName(r, 'artifact.sha256:files.tar.gz')?.ok).toBe(true);
+      expect(byName(r, 'archive.integrity')).toMatchObject({ ok: false, severity: 'error' });
+      expect(r.ok).toBe(false);
     });
 
     it('fails files.count when the archive disagrees with the manifest', async () => {
