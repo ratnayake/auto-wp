@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BearerAuthenticator, parseTokenEntries, RateLimiter, sha256Hex } from '../src/auth.js';
 import { createFakeServices } from '../src/container.js';
 import { type RunningHttpServer, startHttpServer } from '../src/http.js';
@@ -122,5 +122,82 @@ describe('auth helpers', () => {
     expect(l.check('a')).toBeGreaterThan(0);
     t = 1001;
     expect(l.check('a')).toBe(0);
+  });
+});
+
+describe('failed-auth throttling', () => {
+  it('does not lock out valid tokens; keys on X-Forwarded-For only from a trusted proxy', async () => {
+    const s = await start({ trustProxy: ['127.0.0.1'] });
+    const bad = (xff: string) =>
+      fetch(s.url, {
+        method: 'POST',
+        headers: headers({ authorization: 'Bearer bad', 'x-forwarded-for': xff }),
+        body: JSON.stringify(INIT),
+      });
+    const codes: number[] = [];
+    for (let i = 0; i < 22; i++) codes.push((await bad('203.0.113.9')).status);
+    expect(codes.at(-1)).toBe(429);
+    // another client IP is unaffected, and so is a valid token from the attacker's IP
+    expect((await bad('198.51.100.7')).status).toBe(401);
+    const ok = await fetch(s.url, {
+      method: 'POST',
+      headers: headers({ authorization: `Bearer ${TOKEN}`, 'x-forwarded-for': '203.0.113.9' }),
+      body: JSON.stringify(INIT),
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it('ignores X-Forwarded-For from untrusted peers', async () => {
+    const s = await start();
+    const codes: number[] = [];
+    for (let i = 0; i < 22; i++) {
+      codes.push(
+        (
+          await fetch(s.url, {
+            method: 'POST',
+            headers: headers({ authorization: 'Bearer bad', 'x-forwarded-for': `10.0.0.${i}` }),
+            body: JSON.stringify(INIT),
+          })
+        ).status,
+      );
+    }
+    expect(codes.at(-1)).toBe(429);
+  });
+});
+
+describe('elicitation over HTTP', () => {
+  it('delivers the prompt on the request stream', async () => {
+    const { ElicitRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+    const { StaticApprovalGate } = await import('@auto-wp/contracts/fakes');
+    const services = createFakeServices({ approvalGate: new StaticApprovalGate(false) });
+    const s = await start({ services });
+    const client = new Client({ name: 't', version: '0' }, { capabilities: { elicitation: {} } });
+    let hash = '';
+    client.setRequestHandler(ElicitRequestSchema, async () => ({
+      action: 'accept',
+      content: { confirm: hash.slice(0, 8) },
+    }));
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(s.url), {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      }),
+    );
+    const b = await client.callTool({ name: 'backup_create', arguments: { siteId: 'demo' } });
+    const runId = (b.structuredContent as { runId: string }).runId;
+    let backupId = '';
+    await vi.waitFor(async () => {
+      const r = await client.callTool({ name: 'run_status', arguments: { runId } });
+      const run = (r.structuredContent as { run: { status: string; backupId: string } }).run;
+      if (run.status === 'running') throw new Error('running');
+      backupId = run.backupId;
+    });
+    const p = await client.callTool({ name: 'restore_plan', arguments: { siteId: 'demo', backupId } });
+    hash = (p.structuredContent as { plan: { planHash: string } }).plan.planHash;
+    const r = await client.callTool({
+      name: 'restore_execute',
+      arguments: { siteId: 'demo', planHash: hash },
+    });
+    expect(r.isError).toBeFalsy();
+    await client.close();
   });
 });

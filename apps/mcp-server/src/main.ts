@@ -20,6 +20,7 @@ const USAGE = `auto-wp-mcp [--stdio | --http] [options]
   --allow-remote          Permit a non-loopback bind (only behind a TLS reverse proxy)
   --allowed-host <name>   Extra accepted Host header, e.g. mcp.example.com (repeatable)
   --allowed-origin <url>  Extra accepted Origin (repeatable)
+  --trust-proxy <ip>      Proxy peer IP whose X-Forwarded-For is trusted for failed-auth throttling (repeatable)
   --max-body-bytes <n>    HTTP request body limit (default 1048576)
   --rate-limit <n>        HTTP requests per minute per token (default 120)
   --config <file>         JSON AppConfig (default: $AUTOWP_CONFIG, else no sites)
@@ -52,6 +53,7 @@ export async function main(argv: string[]): Promise<void> {
       'allow-remote': { type: 'boolean' },
       'allowed-host': { type: 'string', multiple: true },
       'allowed-origin': { type: 'string', multiple: true },
+      'trust-proxy': { type: 'string', multiple: true },
       'max-body-bytes': { type: 'string' },
       'rate-limit': { type: 'string' },
       config: { type: 'string' },
@@ -77,26 +79,41 @@ export async function main(argv: string[]): Promise<void> {
   const logger = makeLogger(v['log-level'] ?? process.env.AUTOWP_LOG_LEVEL ?? 'info');
   const config = await loadConfig(v.config ?? process.env.AUTOWP_CONFIG);
   const services = createServices(config, { logger });
-  logger.warn('services are fakes until the real packages are wired (see src/wire.ts)');
+  logger.error(
+    'WARNING: FAKE SERVICES IN USE. wire.ts has not been integrated with the real packages: nothing reaches a real site, backups/verification are stubs, and the audit log is in memory only. Do not use in production.',
+  );
 
   if (v.http) {
     const entries = parseTokenEntries(process.env.AUTOWP_MCP_TOKENS ?? '');
     if (entries.length === 0)
       throw new Error('AUTOWP_MCP_TOKENS is empty; refusing to serve HTTP without tokens');
-    const num = (s: string | undefined) => (s === undefined ? undefined : Number(s));
+    const num = (name: string, s: string | undefined) => {
+      if (s === undefined) return undefined;
+      const n = Number(s);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`--${name} must be a positive integer`);
+      return n;
+    };
     const http = await startHttpServer({
       services,
       authenticator: new BearerAuthenticator(entries),
       host: v.host,
-      port: Number(v.port),
+      port: num('port', v.port),
       allowRemote: v['allow-remote'],
       allowedHosts: v['allowed-host'],
       allowedOrigins: v['allowed-origin'],
-      maxBodyBytes: num(v['max-body-bytes']),
-      rateLimitPerMinute: num(v['rate-limit']),
+      trustProxy: v['trust-proxy'],
+      maxBodyBytes: num('max-body-bytes', v['max-body-bytes']),
+      rateLimitPerMinute: num('rate-limit', v['rate-limit']),
     });
     logger.info({ url: http.url }, 'MCP Streamable HTTP listening');
-    const stop = () => void http.close().finally(() => process.exit(0));
+    const stop = () => {
+      const force = setTimeout(() => process.exit(1), 30_000);
+      force.unref();
+      http
+        .close()
+        .catch((err) => logger.error({ err: String(err) }, 'shutdown error'))
+        .finally(() => process.exit(0));
+    };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     return;

@@ -280,3 +280,49 @@ describe('policy merge', () => {
     expect(p.backupMaxAgeMinutes).toBe(10);
   });
 });
+
+describe('hardening', () => {
+  it('rejects a verification with an invalid verifiedAt', async () => {
+    const { call, waitRun, services } = await connect();
+    const orig = services.verifier.verify.bind(services.verifier);
+    services.verifier.verify = async (...a) => ({ ...(await orig(...a)), verifiedAt: 'garbage' });
+    const b = await call('backup_create', { siteId: 'demo' });
+    const { backupId } = await waitRun(b.structuredContent.runId);
+    const r = await call('updates_apply', { siteId: 'demo', backupId });
+    expect(r.isError).toBe(true);
+  });
+
+  it('releases the site lock when persisting the run fails', async () => {
+    const { call, services, runs } = await connect();
+    const save = services.runStore.save.bind(services.runStore);
+    let fail = true;
+    services.runStore.save = async (r) => {
+      if (fail) throw new Error('EIO');
+      return save(r);
+    };
+    expect((await call('backup_create', { siteId: 'demo' })).isError).toBe(true);
+    fail = false;
+    const ok = await call('backup_create', { siteId: 'demo' });
+    expect(ok.isError).toBeFalsy();
+    await runs.idle();
+  });
+
+  it('aborts backup_prune when the list changes during approval', async () => {
+    let n = 0;
+    const gate = {
+      async request(r: { planHash: string }) {
+        // a new backup appears while the human is deciding
+        await services.backup.create(services.config.sites[0]!, null as never);
+        n++;
+        return { approved: true, by: 't', planHash: r.planHash, at: '' };
+      },
+    };
+    const { call, waitRun, services } = await connect({ approvalGate: gate });
+    for (let i = 0; i < 2; i++)
+      await waitRun((await call('backup_create', { siteId: 'demo' })).structuredContent.runId);
+    const r = await call('backup_prune', { siteId: 'demo', keep: 1 });
+    expect(n).toBe(1);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toMatch(/changed while awaiting approval/);
+  });
+});

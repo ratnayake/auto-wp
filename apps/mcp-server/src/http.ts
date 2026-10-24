@@ -21,6 +21,8 @@ export interface HttpServerOptions {
   allowedHosts?: string[];
   /** Origins accepted when a browser sends an Origin header. Loopback origins are always allowed. */
   allowedOrigins?: string[];
+  /** Proxy peer IPs whose X-Forwarded-For is trusted when deriving the client IP for failed-auth throttling. */
+  trustProxy?: string[];
   maxBodyBytes?: number;
   /** Requests per minute per authenticated principal. */
   rateLimitPerMinute?: number;
@@ -52,6 +54,8 @@ class HttpError extends Error {
   }
 }
 
+const normIp = (ip: string): string => ip.replace(/^::ffff:/i, '');
+
 const hostnameOf = (hostHeader: string): string => {
   const h = hostHeader.trim().toLowerCase();
   if (h.startsWith('[')) return h.slice(0, h.indexOf(']') + 1);
@@ -81,6 +85,18 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<RunningH
   const authFailures = new RateLimiter(20, 60_000);
   const sessions = new Map<string, Session>();
   const runs = new RunManager(opts.services);
+
+  const trusted = new Set((opts.trustProxy ?? []).map(normIp));
+  const clientIp = (req: IncomingMessage): string => {
+    const peer = normIp(req.socket.remoteAddress ?? 'unknown');
+    if (!trusted.has(peer)) return peer;
+    const xff = String(req.headers['x-forwarded-for'] ?? '')
+      .split(',')
+      .map((x) => normIp(x.trim()))
+      .filter(Boolean);
+    // Rightmost entry not added by a trusted proxy is the real client.
+    return [...xff].reverse().find((x) => !trusted.has(x)) ?? peer;
+  };
 
   const originAllowed = (origin: string): boolean => {
     if (allowedOrigins.has(origin.toLowerCase())) return true;
@@ -155,17 +171,18 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<RunningH
 
     if (url.pathname !== endpoint) return send(res, 404, 'not found');
 
-    const ip = req.socket.remoteAddress ?? 'unknown';
-    const wait = authFailures.peek(ip);
-    if (wait)
-      return send(res, 429, 'too many failed authentication attempts', {
-        'retry-after': String(Math.ceil(wait / 1000)),
-      });
+    const ip = clientIp(req);
 
     const auth = await opts.authenticator.authenticate(req);
     if (!auth.ok) {
-      authFailures.check(ip);
+      // Only failures count, and only after authentication: valid tokens are never locked out by this limiter.
+      const wait = authFailures.check(ip);
       log.warn({ ip, reason: auth.reason }, 'http auth rejected');
+      if (wait) {
+        return send(res, 429, 'too many failed authentication attempts', {
+          'retry-after': String(Math.ceil(wait / 1000)),
+        });
+      }
       return send(
         res,
         auth.status,

@@ -1,5 +1,10 @@
 # Deploying the MCP server on a VPS
 
+> **WARNING: fake services.** Until `src/wire.ts` is integrated with the real packages, `createServices`
+> returns fakes: nothing reaches a real site, backup verification is a stub, and the audit log is in memory
+> and lost on restart. The server logs a loud error at startup while this is true. Do not rely on this
+> guide's setup for real maintenance until the TODO block in `wire.ts` is resolved.
+
 The server runs outside WordPress and reaches sites over SSH (or the signed PHP agent). Expose it over
 Streamable HTTP behind Caddy (TLS), or run it locally over stdio.
 
@@ -47,8 +52,9 @@ Environment=AUTOWP_CONFIG=/etc/auto-wp/config.json
 # The secrets-store master key is delivered as a credential, readable only by this service:
 LoadCredential=secrets.key:/etc/auto-wp/secrets.key
 Environment=AUTOWP_SECRETS_KEY_FILE=%d/secrets.key
-ExecStart=/usr/bin/node /opt/auto-wp/apps/mcp-server/bin/auto-wp-mcp.mjs --http --host 127.0.0.1 --port 8787 --allowed-host mcp.example.com
+ExecStart=/usr/bin/node /opt/auto-wp/apps/mcp-server/bin/auto-wp-mcp.mjs --http --host 127.0.0.1 --port 8787 --allowed-host mcp.example.com --trust-proxy 127.0.0.1
 Restart=on-failure
+TimeoutStopSec=40
 RestartSec=3
 
 NoNewPrivileges=yes
@@ -62,7 +68,8 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=no   # V8 JIT needs W+X pages
+# V8 JIT needs W+X pages
+MemoryDenyWriteExecute=no
 SystemCallFilter=@system-service
 CapabilityBoundingSet=
 ReadWritePaths=/var/lib/auto-wp/state /var/lib/auto-wp/data
@@ -101,7 +108,10 @@ Caddy keeps the original `Host`, so pass `--allowed-host mcp.example.com` (Host/
 MCP spec's DNS-rebinding defence). Browser-based clients also need `--allowed-origin https://app.example.com`.
 
 The server enforces its own limits as well: bearer auth, 1 MiB body (`--max-body-bytes`), 120 requests
-per minute per token (`--rate-limit`), and 20 failed auth attempts per minute per client IP.
+per minute per token (`--rate-limit`), and 20 failed auth attempts per minute per client IP. Behind Caddy every connection comes from
+127.0.0.1, so add `--trust-proxy 127.0.0.1` to key that limit on the real client IP (from
+`X-Forwarded-For`); otherwise all failures share one bucket. Valid tokens are never blocked by the failed-auth
+limiter. Also rate limit at Caddy if you expose the endpoint publicly.
 
 ## 4. Firewall and egress
 

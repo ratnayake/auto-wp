@@ -125,7 +125,7 @@ export class RunManager {
       throw new UserError(`Backup "${backupId}" has no passing verification. ${hint}`);
     }
     const ageMin = (this.s.clock.now().getTime() - new Date(v.verifiedAt).getTime()) / 60_000;
-    if (ageMin > maxAge) {
+    if (!Number.isFinite(ageMin) || ageMin < -5 || ageMin > maxAge) {
       throw new UserError(
         `Backup "${backupId}" was verified ${Math.round(ageMin)} minutes ago; policy allows ${maxAge}. ${hint}`,
       );
@@ -312,8 +312,14 @@ export class RunManager {
       startedAt: this.s.clock.now().toISOString(),
     };
     const extras = emptyExtras();
+    try {
+      await this.persist(run);
+    } catch (err) {
+      this.busy.delete(site.id);
+      await c.close().catch(() => {});
+      throw err;
+    }
     this.extras.set(run.runId, extras);
-    await this.persist(run);
 
     let counter = 0;
     const log = (message: string, done?: number, total?: number) => {

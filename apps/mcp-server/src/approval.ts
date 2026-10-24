@@ -12,10 +12,14 @@ export interface ApprovalInput {
   summary: string;
   planHash: string;
   actor: string;
+  /** Id of the tool request being served; routes the elicitation onto that request's response stream. */
+  relatedRequestId?: string | number;
 }
 
 /** The user must type this to confirm; short enough to type, long enough that it is not rubber-stamped. */
-export const confirmationCode = (planHash: string): string => planHash.slice(0, 8);
+export const confirmationCode = (planHash: string): string => planHash.slice(0, 8).toLowerCase();
+
+const ELICIT_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Obtains human approval: MCP elicitation when the client supports it, else the injected ApprovalGate.
@@ -34,21 +38,24 @@ export async function requestApproval(
     via = 'elicitation';
     const code = confirmationCode(input.planHash);
     try {
-      const r = await server.server.elicitInput({
-        mode: 'form',
-        message: `${input.summary}\n\nApproval required (${input.action} on ${input.siteId}). To confirm, type the first 8 characters of the plan hash: ${code}`,
-        requestedSchema: {
-          type: 'object',
-          properties: {
-            confirm: {
-              type: 'string',
-              title: 'Plan hash prefix',
-              description: 'First 8 characters of the plan hash',
+      const r = await server.server.elicitInput(
+        {
+          mode: 'form',
+          message: `${input.summary}\n\nApproval required (${input.action} on ${input.siteId}). To confirm, type the first 8 characters of the plan hash: ${code}`,
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              confirm: {
+                type: 'string',
+                title: 'Plan hash prefix',
+                description: 'First 8 characters of the plan hash',
+              },
             },
+            required: ['confirm'],
           },
-          required: ['confirm'],
         },
-      });
+        { relatedRequestId: input.relatedRequestId, timeout: ELICIT_TIMEOUT_MS },
+      );
       const typed = typeof r.content?.confirm === 'string' ? r.content.confirm.trim().toLowerCase() : '';
       result = {
         approved: r.action === 'accept' && typed === code,

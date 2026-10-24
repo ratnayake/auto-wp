@@ -149,7 +149,15 @@ export function buildServerWithRuns(
     siteId: string,
     summary: string,
     planHash: string,
-  ) => requestApproval(s, server, { action, siteId, summary, planHash, actor: ctx.actor });
+  ) =>
+    requestApproval(s, server, {
+      action,
+      siteId,
+      summary,
+      planHash,
+      actor: ctx.actor,
+      relatedRequestId: ctx.extra.requestId,
+    });
 
   const handlers: Handlers = {
     async sites_list() {
@@ -382,6 +390,13 @@ export function buildServerWithRuns(
           `DELETE ${preview.removed.length} backup(s) on ${siteId}, keeping the newest ${keep}: ${preview.removed.join(', ')}`,
           sha({ siteId, keep, removed: preview.removed }),
         );
+        // Backups may have changed while waiting for the human: only delete exactly what was approved.
+        const recheck = await s.backup.prune(site, c, keep, { dryRun: true });
+        if (JSON.stringify(recheck.removed) !== JSON.stringify(preview.removed)) {
+          throw new UserError(
+            'Backups changed while awaiting approval; re-run backup_prune to review the new list.',
+          );
+        }
         const done = await s.backup.prune(site, c, keep, { dryRun: false });
         return {
           text: `Removed ${done.removed.length} backup(s): ${done.removed.join(', ')}`,
