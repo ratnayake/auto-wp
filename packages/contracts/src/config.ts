@@ -19,7 +19,47 @@ export const SshTransportConfigSchema = z.object({
   toolDir: z.string().default('~/.auto-wp'),
 });
 
-export const AgentTransportConfigSchema = z.object({
+function isLoopbackHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname === '[::1]' || hostname === '::1') {
+    return true;
+  }
+  const match = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (match) {
+    const a = Number(match[1]);
+    const b = Number(match[2]);
+    const c = Number(match[3]);
+    return a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 && c <= 255;
+  }
+  return false;
+}
+
+function validateAgentEndpoint(
+  data: { endpoint: string; insecureHttpLoopback: boolean },
+  ctx: z.RefinementCtx,
+): void {
+  try {
+    const parsed = new URL(data.endpoint);
+    if (parsed.protocol === 'https:') {
+      return;
+    }
+    if (parsed.protocol === 'http:' && data.insecureHttpLoopback && isLoopbackHost(parsed.hostname)) {
+      return;
+    }
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'endpoint must use https: unless insecureHttpLoopback is enabled for a loopback host',
+      path: ['endpoint'],
+    });
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'invalid endpoint URL',
+      path: ['endpoint'],
+    });
+  }
+}
+
+export const AgentTransportConfigBaseSchema = z.object({
   kind: z.literal('agent'),
   /** Full URL of the deployed agent, e.g. https://example.com/auto-wp-agent/agent.php */
   endpoint: z.url(),
@@ -33,10 +73,12 @@ export const AgentTransportConfigSchema = z.object({
   insecureHttpLoopback: z.boolean().default(false),
 });
 
+export const AgentTransportConfigSchema = AgentTransportConfigBaseSchema.superRefine(validateAgentEndpoint);
+
 export const SftpAgentTransportConfigSchema = z.object({
   kind: z.literal('sftp+agent'),
   sftp: SshTransportConfigSchema.omit({ kind: true }),
-  agent: AgentTransportConfigSchema.omit({ kind: true }),
+  agent: AgentTransportConfigBaseSchema.omit({ kind: true }).superRefine(validateAgentEndpoint),
 });
 
 export const TransportConfigSchema = z.discriminatedUnion('kind', [
@@ -74,6 +116,58 @@ export const PolicySchema = z.object({
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
+export const PolicyOverrideSchema = z.object({
+  requireApproval: z.array(ApprovalActionSchema).optional(),
+  dbSnapshot: z.enum(['always', 'never', 'auto']).optional(),
+  dbSnapshotMaxMb: z.number().optional(),
+  dbMigratingPlugins: z.array(z.string()).optional(),
+  backupMaxAgeMinutes: z.number().optional(),
+  holds: z.array(z.string()).optional(),
+  updateInactive: z.boolean().optional(),
+  thresholds: z
+    .object({
+      pixelDiffPct: z.number().optional(),
+      slowdownFactor: z.number().optional(),
+      slowdownMinMs: z.number().optional(),
+    })
+    .optional(),
+  retention: z
+    .object({
+      remote: z.number().int().optional(),
+      local: z.number().int().optional(),
+    })
+    .optional(),
+});
+export type PolicyOverride = z.infer<typeof PolicyOverrideSchema>;
+
+export function mergePolicy(base: Policy, override: PolicyOverride | undefined): Policy {
+  if (!override) {
+    return {
+      ...base,
+      thresholds: { ...base.thresholds },
+      retention: { ...base.retention },
+    };
+  }
+  return {
+    requireApproval: override.requireApproval ?? base.requireApproval,
+    dbSnapshot: override.dbSnapshot ?? base.dbSnapshot,
+    dbSnapshotMaxMb: override.dbSnapshotMaxMb ?? base.dbSnapshotMaxMb,
+    dbMigratingPlugins: override.dbMigratingPlugins ?? base.dbMigratingPlugins,
+    backupMaxAgeMinutes: override.backupMaxAgeMinutes ?? base.backupMaxAgeMinutes,
+    holds: override.holds ?? base.holds,
+    updateInactive: override.updateInactive ?? base.updateInactive,
+    thresholds: {
+      pixelDiffPct: override.thresholds?.pixelDiffPct ?? base.thresholds.pixelDiffPct,
+      slowdownFactor: override.thresholds?.slowdownFactor ?? base.thresholds.slowdownFactor,
+      slowdownMinMs: override.thresholds?.slowdownMinMs ?? base.thresholds.slowdownMinMs,
+    },
+    retention: {
+      remote: override.retention?.remote ?? base.retention.remote,
+      local: override.retention?.local ?? base.retention.local,
+    },
+  };
+}
+
 export const SiteConfigSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   name: z.string(),
@@ -94,7 +188,7 @@ export const SiteConfigSchema = z.object({
     .default({ encryptDb: false }),
   /** Remote log files to scan for PHP fatals, relative to wpRoot. */
   logFiles: z.array(z.string()).default(['wp-content/debug.log', 'error_log']),
-  policy: PolicySchema.partial().default({}),
+  policy: PolicyOverrideSchema.default({}),
 });
 export type SiteConfig = z.infer<typeof SiteConfigSchema>;
 
