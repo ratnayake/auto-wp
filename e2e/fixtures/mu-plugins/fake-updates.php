@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AutoWP E2E fake updates
  * Description: Offers autowp-breaker 2.0.0 from the mock-feeds container, and pins the contact-form-7 offer
- * to 5.8.4 (still compatible with the seeded WordPress 6.5.2), as plugin updates.
+ * to 5.8.4 and twentytwentyfour to 1.1 (both compatible with the seeded WordPress 6.5.2).
  */
 defined('ABSPATH') || exit;
 
@@ -42,6 +42,32 @@ function autowp_e2e_offer($transient)
     unset($transient->no_update[AUTOWP_E2E_CF7]);
     return $transient;
 }
+
+// Theme offers come from wordpress.org too, but a DB restore can bring back a stale transient without one.
+function autowp_e2e_offer_theme($transient)
+{
+    if (!is_object($transient)) {
+        $transient = new stdClass();
+    }
+    if (!isset($transient->response) || !is_array($transient->response)) {
+        $transient->response = [];
+    }
+    $transient->response['twentytwentyfour'] = [
+        'theme' => 'twentytwentyfour',
+        'new_version' => '1.1',
+        'url' => 'https://wordpress.org/themes/twentytwentyfour/',
+        'package' => 'https://downloads.wordpress.org/theme/twentytwentyfour.1.1.zip',
+        'requires' => '6.4',
+        'requires_php' => '7.0',
+    ];
+    if (isset($transient->no_update) && is_array($transient->no_update)) {
+        unset($transient->no_update['twentytwentyfour']);
+    }
+    return $transient;
+}
+
+add_filter('pre_set_site_transient_update_themes', 'autowp_e2e_offer_theme');
+add_filter('site_transient_update_themes', 'autowp_e2e_offer_theme');
 
 add_filter('pre_set_site_transient_update_plugins', 'autowp_e2e_offer');
 // Also on read, so the offer survives a stored transient written while offline.

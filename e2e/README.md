@@ -56,8 +56,8 @@ lets the 3-record mock feed through the truncation guard.
 
 Environment quirks the harness works around: the MariaDB 11 client in `wp-ssh` insists on TLS, which the
 MariaDB 10.11 server lacks, and WP-CLI runs it with `--no-defaults`, so `/usr/local/bin/{mariadb,mysql,...}` wrap it
-with `--skip-ssl`. The `fake-updates` mu-plugin pins the contact-form-7 offer to 5.8.4 because wordpress.org's
-current release needs a newer core. After a full restore, Apache's PHP workers can fatal on stale `realpath()`
+with `--skip-ssl`. The `fake-updates` mu-plugin pins the contact-form-7 (5.8.4) and twentytwentyfour (1.1) offers: wordpress.org's
+current contact-form-7 needs a newer core, and a DB restore can bring back an update transient without the theme offer. After a full restore, Apache's PHP workers can fatal on stale `realpath()`
 cache entries for files the restore removed for up to `realpath_cache_ttl` (120 s); the scenarios wait it out.
 
 `AUTOWP_E2E=1` is required; with it set but `e2e/.tmp/env` missing, the run fails loudly ("run up.sh first").
