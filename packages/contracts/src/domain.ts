@@ -14,6 +14,7 @@ export const UpdateItemSchema = z.object({
   source: z.enum(['wporg', 'premium', 'unknown']),
   requiresWp: z.string().optional(),
   requiresPhp: z.string().optional(),
+  requiresPlugins: z.array(z.string()).optional(),
   parentTheme: z.string().optional(),
   /** Core: x.y changed. Plugins/themes: first numeric segment changed. */
   isMajor: z.boolean(),
@@ -95,6 +96,7 @@ export const ItemVulnAssessmentSchema = z.object({
   stillAffectingNew: z.array(VulnerabilitySchema),
   sources: z.array(z.string()),
   errors: z.array(z.string()),
+  lookupFailed: z.object({ old: z.boolean(), new: z.boolean() }).optional(),
 });
 export type ItemVulnAssessment = z.infer<typeof ItemVulnAssessmentSchema>;
 

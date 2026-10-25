@@ -1,0 +1,168 @@
+{
+  "0b1c2d3e-0001-4000-8000-000000000001": {
+    "id": "0b1c2d3e-0001-4000-8000-000000000001",
+    "title": "Contact Form 7 <= 5.8.3 - Unauthenticated File Upload via Filename \"Handling\"",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "Contact Form 7",
+        "slug": "contact-form-7",
+        "affected_versions": {
+          "* - 5.8.3": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "5.8.3",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["5.8.4"]
+      }
+    ],
+    "cve": "CVE-2023-6449",
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "score": 9.8, "rating": "Critical" },
+    "references": ["https://www.wordfence.com/threat-intel/vulnerabilities/id/0b1c2d3e-0001"],
+    "published": "2023-12-01T00:00:00Z"
+  },
+  "0b1c2d3e-0002-4000-8000-000000000002": {
+    "id": "0b1c2d3e-0002-4000-8000-000000000002",
+    "title": "Twenty Twenty-Four < 1.1 - Reflected Cross-Site Scripting",
+    "software": [
+      {
+        "type": "theme",
+        "name": "Twenty Twenty-Four",
+        "slug": "twentytwentyfour",
+        "affected_versions": {
+          "* - 1.0": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "1.0",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["1.1"]
+      }
+    ],
+    "cve": null,
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", "score": 6.1, "rating": "Medium" },
+    "references": ["https://example.org/twentytwentyfour-xss"],
+    "published": "2024-02-10T00:00:00Z"
+  },
+  "0b1c2d3e-0003-4000-8000-000000000003": {
+    "id": "0b1c2d3e-0003-4000-8000-000000000003",
+    "title": "WordPress Core < 6.5.5 - Stored Cross-Site Scripting via HTML API",
+    "software": [
+      {
+        "type": "core",
+        "name": "WordPress",
+        "slug": "wordpress",
+        "affected_versions": {
+          "6.5 - 6.5.4": {
+            "from_version": "6.5",
+            "from_inclusive": true,
+            "to_version": "6.5.4",
+            "to_inclusive": true
+          },
+          "* - 6.4.4": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "6.4.4",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["6.5.5", "6.4.5"]
+      }
+    ],
+    "cve": "CVE-2024-31210",
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H", "score": 7.2, "rating": "High" },
+    "references": ["https://wordpress.org/news/2024/06/wordpress-6-5-5/"],
+    "published": "2024-06-24T00:00:00Z"
+  },
+  "0b1c2d3e-0004-4000-8000-000000000004": {
+    "id": "0b1c2d3e-0004-4000-8000-000000000004",
+    "title": "Contact Form 7 <= 5.9 - Open Redirect",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "Contact Form 7",
+        "slug": "contact-form-7",
+        "affected_versions": {
+          "5.9 - 5.9": {
+            "from_version": "5.9",
+            "from_inclusive": true,
+            "to_version": "5.9",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["5.9.1"]
+      }
+    ],
+    "cve": "CVE-2024-0001",
+    "cvss": { "score": 4.7, "rating": "Medium" },
+    "references": [],
+    "published": "2024-03-01T00:00:00Z"
+  },
+  "0b1c2d3e-0005-4000-8000-000000000005": {
+    "id": "0b1c2d3e-0005-4000-8000-000000000005",
+    "title": "Unpatched Gallery Plugin <= 2.0 - SQL Injection",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "Unpatched Gallery",
+        "slug": "Unpatched-Gallery",
+        "affected_versions": {
+          "* - *": { "from_version": "*", "from_inclusive": true, "to_version": "*", "to_inclusive": true }
+        },
+        "patched": false,
+        "patched_versions": []
+      }
+    ],
+    "cve": "CVE-2024-0002",
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", "score": 7.5, "rating": "High" },
+    "references": ["https://example.org/a", "https://example.org/b"],
+    "published": "2024-04-01T00:00:00Z"
+  },
+  "0b1c2d3e-0006-4000-8000-000000000006": {
+    "id": "0b1c2d3e-0006-4000-8000-000000000006",
+    "title": "Shared Library { braces } in \\\"title\\\" - Multi-software issue",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "Plugin A",
+        "slug": "plugin-a",
+        "affected_versions": {
+          "1.0 - 1.4.9": {
+            "from_version": "1.0",
+            "from_inclusive": true,
+            "to_version": "1.5",
+            "to_inclusive": false
+          }
+        },
+        "patched": true,
+        "patched_versions": ["1.5"]
+      },
+      {
+        "type": "theme",
+        "name": "Theme B",
+        "slug": "theme-b",
+        "affected_versions": {
+          "* - 2.2": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "2.2",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["2.3"]
+      }
+    ],
+    "cve": "CVE-2024-0003",
+    "cvss": null,
+    "references": ["https://example.org/shared"],
+    "published": "2024-05-01T00:00:00Z"
+  }
+}
