@@ -36,7 +36,8 @@ describe('create: strategies', () => {
     const m = await svc.create(makeSite(), c, { pull: false });
     const bash = execArgvs(c).find((a) => a[0] === 'bash') as string[];
     expect(bash.slice(0, 2)).toEqual(['bash', '-c']);
-    expect(bash[2]).toContain('"$1" db export - --path="$2" --single-transaction');
+    expect(bash[2]).toContain('"$1" db export "$sql" --path="$2" --single-transaction');
+    expect(bash[2]).toContain('gzip -c "$sql" > "$3"');
     expect(bash[2]).not.toContain('/var/www');
     expect(bash.slice(3, 7)).toEqual([
       'auto-wp-dump',

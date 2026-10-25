@@ -350,6 +350,10 @@ export class DefaultBackupService implements BackupService {
         run: async () => {
           const creds = await this.deps.dbCredentials?.(conn);
           if (!creds) throw new BackupError('database credentials unavailable');
+          // newlines/control chars would break or inject lines in the options file
+          if ([creds.user, creds.password, creds.host, creds.name].some((v) => /[\x00-\x1f\x7f]/.test(v))) {
+            throw new BackupError('database credentials contain control characters');
+          }
           const cnf = posix.join(caps.outsideDocrootDir ?? dir, `.auto-wp-${id}.cnf`);
           const lines = ['[client]', `user=${optQuote(creds.user)}`, `password=${optQuote(creds.password)}`];
           lines.push(`host=${optQuote(creds.host)}`);

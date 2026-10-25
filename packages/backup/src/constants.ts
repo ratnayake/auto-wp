@@ -61,15 +61,17 @@ export const WEB_CONFIG = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 /**
- * Fixed scripts: all variable parts are positional parameters, never interpolated. The terminator is
- * appended inside the pipe so that it ends up in the gzip stream; a failing dump exits non-zero.
- * $1 = wp binary, $2 = wp root, $3 = dest, $4 = ISO timestamp.
+ * Fixed scripts: all variable parts are positional parameters, never interpolated. wp-cli exports to a
+ * file (stdout can carry PHP warnings that would corrupt the SQL); the terminator is appended to the
+ * file before gzip so it is inside the gzip stream, and a failing export exits non-zero.
+ * $1 = wp binary, $2 = wp root, $3 = dest (.gz), $4 = ISO timestamp.
  */
 export const WPCLI_DUMP_SCRIPT =
-  'set -o pipefail; { "$1" db export - --path="$2" --single-transaction --skip-plugins --skip-themes || exit 1; ' +
-  'printf \'%s\\n\' "-- Dump completed $4"; } | gzip -c > "$3"';
+  'set -e; set -o pipefail; umask 077; sql="$3.tmp.sql"; trap \'rm -f "$sql"\' EXIT; ' +
+  '"$1" db export "$sql" --path="$2" --single-transaction --skip-plugins --skip-themes >/dev/null; ' +
+  'printf \'%s\\n\' "-- Dump completed $4" >> "$sql"; gzip -c "$sql" > "$3"';
 
 /** $1 = mysqldump, $2 = defaults-extra-file, $3 = db name, $4 = dest, $5 = ISO timestamp. */
 export const MYSQLDUMP_SCRIPT =
-  'set -o pipefail; { "$1" --defaults-extra-file="$2" --single-transaction --quick --routines --triggers "$3" || exit 1; ' +
+  'set -o pipefail; { "$1" --defaults-extra-file="$2" --single-transaction --quick --routines --triggers -- "$3" || exit 1; ' +
   'printf \'%s\\n\' "-- Dump completed $5"; } | gzip -c > "$4"';
