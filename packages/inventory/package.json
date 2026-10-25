@@ -1,0 +1,18 @@
+{
+  "name": "@auto-wp/inventory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "gen:version-fixtures": "node scripts/gen-version-fixtures.mjs"
+  },
+  "dependencies": {
+    "@auto-wp/contracts": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}
