@@ -7,7 +7,7 @@ import { CapabilitiesSchema, FileStatSchema } from './connection.js';
  * HTTPS. See docs/agent-protocol.md for the wire format.
  */
 
-const Slug = z.string().regex(/^[a-z0-9_.-]+$/i, 'invalid slug');
+export const Slug = z.string().regex(/^(?![.]{1,2}$)[a-z0-9_][a-z0-9_.-]*$/i, 'invalid slug');
 const RelPath = z.string().min(1).max(4096);
 const Excludes = z.array(z.string()).default([]);
 
@@ -29,7 +29,7 @@ export const WpPluginInfoSchema = z.object({
   active: z.boolean(),
   networkActive: z.boolean().default(false),
   /** `Update URI` header; `false` means updates disabled. */
-  updateUri: z.string().optional(),
+  updateUri: z.union([z.string(), z.literal(false)]).optional(),
   /** `Requires Plugins` header slugs (WP 6.5+). */
   requiresPlugins: z.array(z.string()).default([]),
   update: WpUpdateInfoSchema.optional(),
@@ -224,6 +224,7 @@ export const LONG_RUNNING_ACTIONS: readonly ActionName[] = [
   'db.import',
   'fs.count',
   'fs.sha256',
+  'wp.upgrade',
 ];
 /** Actions that need WordPress to bootstrap. All others must work with a broken WP. */
 export const WP_BRIDGE_ACTIONS: readonly ActionName[] = ['wp.inventory', 'wp.upgrade'];
