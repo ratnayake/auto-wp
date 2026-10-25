@@ -1,5 +1,6 @@
 import {
   type Capabilities,
+  type InventoryDetection,
   type InventoryService,
   type Logger,
   type Policy,
@@ -9,14 +10,10 @@ import {
 } from '@auto-wp/contracts';
 import { itemsFromInventory } from './from-inventory.js';
 import { detectFromShell } from './from-shell.js';
-import { type InventoryItem } from './item.js';
 import { planUpdates } from './planner.js';
 
-/** Detection result. `installedCore` is known even when no core update is pending. */
-export interface InventoryDetection {
-  installedCore: string;
-  items: InventoryItem[];
-}
+/** Detection result (contracts `InventoryDetection`). */
+export type { InventoryDetection } from '@auto-wp/contracts';
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 

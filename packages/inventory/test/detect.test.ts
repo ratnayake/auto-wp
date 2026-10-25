@@ -1,3 +1,4 @@
+import { PolicySchema } from '@auto-wp/contracts';
 import { FakeSiteConnection, MemoryLogger } from '@auto-wp/contracts/fakes';
 import { describe, expect, it } from 'vitest';
 import { DefaultInventoryService } from '../src/index.js';
@@ -69,6 +70,58 @@ describe('DefaultInventoryService.detect via WP-CLI', () => {
     expect(slugs).not.toContain('site-helper');
     expect(slugs).not.toContain('contact-form-7');
     expect(slugs).not.toContain('storefront');
+  });
+
+  it('parses real WP-CLI 2.x output: must-use `update: false`, and keeps `unavailable` offers with known requirements', async () => {
+    const plugins = [
+      ...pluginList,
+      {
+        name: 'old-wp',
+        title: 'Old',
+        status: 'active',
+        version: '1.0',
+        update_version: '2.0',
+        update: 'unavailable',
+        file: 'old-wp/old-wp.php',
+      },
+      {
+        name: 'mystery',
+        title: 'M',
+        status: 'active',
+        version: '1.0',
+        update_version: '2.0',
+        update: 'unavailable',
+        file: 'mystery/m.php',
+      },
+      {
+        name: 'fake-updates',
+        title: 'MU',
+        status: 'must-use',
+        version: '',
+        update_version: '',
+        update: false,
+        file: 'fake-updates.php',
+      },
+    ];
+    const transient = {
+      ...transientPlugins,
+      response: {
+        ...transientPlugins.response,
+        'old-wp/old-wp.php': { slug: 'old-wp', new_version: '2.0', requires: '6.9', requires_plugins: [] },
+      },
+    };
+    const c = wpCliSite({
+      ...cliReplies,
+      'plugin list': { stdout: json(plugins) },
+      'option get _site_transient_update_plugins': { stdout: json(transient) },
+    });
+    const svc = service();
+    const items = await svc.detect(c);
+    expect(items.find((i) => i.slug === 'old-wp')).toMatchObject({ requiresWp: '6.9', newVersion: '2.0' });
+    expect(items.map((i) => i.slug)).not.toContain('mystery');
+    expect(items.map((i) => i.slug)).not.toContain('fake-updates');
+    const plan = svc.plan(items, c.caps, PolicySchema.parse({}), '6.6.2');
+    expect(plan.find((i) => i.slug === 'old-wp')?.heldReason).toMatch(/requires WordPress 6\.9/);
   });
 
   it('runs argv only with --path, --no-color and read-only skip flags', async () => {

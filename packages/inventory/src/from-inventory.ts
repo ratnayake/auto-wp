@@ -1,9 +1,9 @@
-import type { WpInventory } from '@auto-wp/contracts';
-import { buildItem, type InventoryItem, isNewer, sourceOf } from './item.js';
+import type { UpdateItem, WpInventory } from '@auto-wp/contracts';
+import { buildItem, isNewer, sourceOf } from './item.js';
 
 /** Maps a parsed `wp.inventory` result (WordPress bridge, full metadata) to update items. */
-export function itemsFromInventory(inv: WpInventory): InventoryItem[] {
-  const items: InventoryItem[] = [];
+export function itemsFromInventory(inv: WpInventory): UpdateItem[] {
+  const items: UpdateItem[] = [];
 
   const core = inv.core;
   if (core.update && isNewer(core.update.version, core.version)) {

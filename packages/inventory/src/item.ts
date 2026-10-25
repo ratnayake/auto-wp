@@ -2,10 +2,9 @@ import type { ItemType, UpdateItem } from '@auto-wp/contracts';
 import { versionCompare } from './version-compare.js';
 
 /**
- * UpdateItem plus the plugin `Requires Plugins` slugs the planner needs for dependency ordering.
- * The shared UpdateItemSchema has no such field, so it is carried on the object only (zod parsing strips it).
+ * @deprecated Use `UpdateItem` from contracts; `requiresPlugins` is part of `UpdateItemSchema` now.
  */
-export type InventoryItem = UpdateItem & { requiresPlugins?: string[] };
+export type InventoryItem = UpdateItem;
 
 /** Core: x.y changed. Plugins/themes: first numeric segment changed. */
 export function isMajorChange(type: ItemType, from: string, to: string): boolean {
@@ -30,6 +29,6 @@ export function sourceOf(packageUrl: string | undefined): UpdateItem['source'] {
 /** True when `to` is strictly newer than `from` under PHP version_compare rules. */
 export const isNewer = (to: string, from: string): boolean => versionCompare(to, from) > 0;
 
-export function buildItem(input: Omit<InventoryItem, 'isMajor'>): InventoryItem {
+export function buildItem(input: Omit<UpdateItem, 'isMajor'>): UpdateItem {
   return { ...input, isMajor: isMajorChange(input.type, input.currentVersion, input.newVersion) };
 }
