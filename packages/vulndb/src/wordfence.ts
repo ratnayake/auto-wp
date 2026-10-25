@@ -8,7 +8,11 @@ export const DEFAULT_WORDFENCE_FEED_URL =
   'https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production';
 
 export interface WordfenceOptions {
-  apiKey: string;
+  /**
+   * Feed API key, or a function resolving it (e.g. from the SecretStore) on first download. Undefined: no
+   * Authorization header (mirrors/mock feeds).
+   */
+  apiKey?: string | (() => Promise<string | undefined>);
   cacheDir: string;
   clock: Clock;
   logger?: Logger;
@@ -188,10 +192,9 @@ export class WordfenceProvider implements VulnProvider {
   }
 
   private async refresh(old: CacheFile | undefined): Promise<CacheFile> {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.opts.apiKey}`,
-      Accept: 'application/json',
-    };
+    const key = typeof this.opts.apiKey === 'function' ? await this.opts.apiKey() : this.opts.apiKey;
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (key) headers.Authorization = `Bearer ${key}`;
     if (old?.etag) headers['If-None-Match'] = old.etag;
     const res = await this.fetchImpl(this.url, { headers, signal: AbortSignal.timeout(15 * 60_000) });
     const nowIso = this.opts.clock.now().toISOString();

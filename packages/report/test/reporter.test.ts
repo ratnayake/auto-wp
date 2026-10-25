@@ -142,6 +142,24 @@ describe('DefaultReporter edge cases', () => {
     expect(html).toContain('Vulnerability data is incomplete');
   });
 
+  it('never claims "fixed by this update" when the new-version lookup failed', async () => {
+    const base = fixtureManyVulns();
+    const first = base.assessments.find((a) => a.affectingOld.length > 0)!;
+    const assessments = base.assessments.map((a) =>
+      a === first ? { ...a, stillAffectingNew: [], lookupFailed: { old: false, new: true } } : a,
+    );
+    const report = buildReport({ ...base, assessments });
+    const md = await reporter.render(report, 'md');
+    const html = await reporter.render(report, 'html');
+    const section = (s: string) => s.split(first.item.name)[1] ?? '';
+    expect(section(md)).toContain('unknown (lookup failed)');
+    expect(html).toContain('unknown (lookup failed)');
+    const view = (await reporter.render(report, 'md')).split('\n');
+    const row = view.find((l) => l.includes(first.affectingOld[0]!.title));
+    expect(row).toBeDefined();
+    expect(row).not.toMatch(/\| yes \|$/);
+  });
+
   it('says when no backup verification ran', async () => {
     const base = fixtureNoVulns();
     const report = buildReport({ ...base, verification: undefined });

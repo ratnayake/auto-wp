@@ -19,10 +19,6 @@ const ATTRIBUTIONS: Record<VulnProvider['name'], string | undefined> = {
   patchstack: undefined,
 };
 
-type HintedProvider = VulnProvider & {
-  lookup(type: UpdateItem['type'], slug: string, hint?: { versions?: string[] }): Promise<Vulnerability[]>;
-};
-
 const normTitle = (t: string): string =>
   t
     .toLowerCase()
@@ -58,9 +54,6 @@ export function dedupe(vulns: Vulnerability[]): Vulnerability[] {
   return [...byKey.values()];
 }
 
-/** Local extension of ItemVulnAssessment (contracts PR #14 adds this field upstream). */
-export type AssessmentWithFailure = ItemVulnAssessment & { lookupFailed: { old: boolean; new: boolean } };
-
 export class DefaultVulnService implements VulnService {
   private readonly used = new Set<VulnProvider['name']>();
 
@@ -70,18 +63,18 @@ export class DefaultVulnService implements VulnService {
     private readonly logger?: Logger,
   ) {}
 
-  async assess(items: UpdateItem[]): Promise<AssessmentWithFailure[]> {
+  async assess(items: UpdateItem[]): Promise<ItemVulnAssessment[]> {
     return Promise.all(items.map((item) => this.assessItem(item)));
   }
 
-  private async assessItem(item: UpdateItem): Promise<AssessmentWithFailure> {
+  private async assessItem(item: UpdateItem): Promise<ItemVulnAssessment> {
     const errors: string[] = [];
     const sources: string[] = [];
     let vulns: Vulnerability[] = [];
     for (const p of this.providers) {
       try {
         const hint = { versions: [item.currentVersion, item.newVersion] };
-        vulns = await (p as HintedProvider).lookup(item.type, item.slug, hint);
+        vulns = await p.lookup(item.type, item.slug, hint);
         sources.push(p.name);
         const notice = (p as { staleNotice?: () => string | undefined }).staleNotice?.();
         if (notice) errors.push(`${p.name}: ${notice}`);

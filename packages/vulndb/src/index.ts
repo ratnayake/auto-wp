@@ -1,7 +1,6 @@
 export { ProviderNotConfiguredError, QuotaExceededError } from './errors.js';
 export { PatchstackProvider } from './patchstack.js';
 export {
-  type AssessmentWithFailure,
   DefaultVulnService,
   dedupe,
   WORDFENCE_ATTRIBUTION,
