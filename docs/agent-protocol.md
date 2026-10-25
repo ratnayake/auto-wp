@@ -3,12 +3,12 @@
 The PHP agent (`agent-php/dist/agent.php`) exposes the actions in `packages/contracts/src/actions.ts`.
 It runs in two modes that share one action implementation:
 
-| Mode | Invocation | Auth |
-|---|---|---|
+| Mode           | Invocation                                                                                       | Auth                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
 | CLI (over SSH) | `php ~/.auto-wp/agent.php --cli <action>`; params JSON on **stdin**; response JSON on **stdout** | SSH itself; CLI mode refuses to run under a web SAPI |
-| Web (no SSH) | `POST <endpoint>` with JSON body | Signed headers below; HTTPS required |
+| Web (no SSH)   | `POST <endpoint>` with JSON body                                                                 | Signed headers below; HTTPS required                 |
 
-Core actions (`fs.*`, `db.*`, `wp.maintenance`, `logs.tail`, `cache.flush`, `lock.*`, `job.status`, `probe`) **must not load WordPress**: they read DB credentials by parsing `wp-config.php` with a tokenizer (never `include`), so they keep working when WordPress is fatally broken. Bridge actions (`wp.inventory`, `wp.upgrade`) bootstrap WordPress in an isolated sub-process/sub-request guarded by `register_shutdown_function`, returning error code `wp_fatal` when WordPress dies.
+Core actions (`fs.*`, `db.*`, `wp.maintenance`, `logs.tail`, `cache.flush`, `lock.*`, `job.status`, `probe`) **must not load WordPress**: they read DB credentials by parsing `wp-config.php` with a tokenizer (never `include`), so they keep working when WordPress is fatally broken. Bridge actions (`wp.inventory`, `wp.upgrade`) bootstrap WordPress in an isolated sub-process/sub-request guarded by `register_shutdown_function`, returning error code `wp_fatal` when WordPress dies. As a long-running action, `wp.upgrade` may return a job handle.
 
 ## Request
 
@@ -60,7 +60,7 @@ AUTOWP-SIG-V1
 {"ok": false, "error": {"code": "invalid_params", "message": "..."}}
 ```
 
-Long-running actions (`LONG_RUNNING_ACTIONS`) may return a job. The client polls `job.status` (also signed) until `state` is `done` (the `result` holds the action result) or `failed`. Jobs are resumable across requests: each poll advances the job by one time-boxed slice (≈ 20 s) so it stays under shared-host `max_execution_time`.
+Long-running actions (`LONG_RUNNING_ACTIONS`, including `wp.upgrade`) may return a job. The client polls `job.status` (also signed) until `state` is `done` (the `result` holds the action result) or `failed`. Jobs are resumable across requests: each poll advances the job by one time-boxed slice (≈ 20 s) so it stays under shared-host `max_execution_time`.
 
 Error codes: see `AGENT_ERROR_CODES` in `packages/contracts/src/protocol.ts`.
 
