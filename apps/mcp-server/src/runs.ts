@@ -5,15 +5,17 @@ import {
   type HealthSnapshot,
   type ItemResult,
   itemKey,
+  mergePolicy,
   type Policy,
-  PolicySchema,
   type Report,
   type RestorePlan,
   type RunRecord,
   type SiteConfig,
   type SiteConnection,
+  type UpdateItem,
   type VerificationResult,
 } from '@auto-wp/contracts';
+import { PolicyEngine } from '@auto-wp/safety';
 import type { Services } from './container.js';
 import { buildReport, type RunExtras } from './report.js';
 
@@ -52,14 +54,32 @@ export class RunManager {
     return site;
   }
 
+  /** Effective policy: the app policy with the site's explicit overrides (contracts `mergePolicy`). */
   policy(site: SiteConfig): Policy {
-    // Contract gap: zod 4 may fill defaults into a partial per-site policy, which would clobber the global
-    // policy. Treat a site value equal to the schema default as "not overridden".
-    const defaults = PolicySchema.parse({}) as Record<string, unknown>;
-    const overrides = Object.fromEntries(
-      Object.entries(site.policy ?? {}).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(defaults[k])),
-    );
-    return PolicySchema.parse({ ...this.s.config.policy, ...overrides });
+    return mergePolicy(this.s.config.policy, site.policy);
+  }
+
+  /**
+   * Detected items plus the plan for them. Uses `inspect` when the inventory service has it, so the planner
+   * knows the installed core version even when no core update is pending.
+   */
+  async detectAndPlan(
+    site: SiteConfig,
+    c: SiteConnection,
+    only?: string[],
+    o: { plan?: boolean } = {},
+  ): Promise<{ items: UpdateItem[]; plan: UpdateItem[]; installedCore?: string }> {
+    const inv = this.s.inventory;
+    const detection = inv.inspect ? await inv.inspect(c) : { items: await inv.detect(c) };
+    let items = detection.items;
+    if (only) {
+      const keys = new Set(only);
+      items = items.filter((i) => keys.has(itemKey(i)));
+    }
+    const installedCore = 'installedCore' in detection ? detection.installedCore : undefined;
+    if (o.plan === false) return { items, plan: [], installedCore };
+    const plan = inv.plan(items, await c.probe(), this.policy(site), installedCore);
+    return { items, plan, installedCore };
   }
 
   /** Resolves when all background runs have finished (tests, graceful shutdown). */
@@ -114,7 +134,8 @@ export class RunManager {
 
   /** Throws UserError unless backupId exists and was verified OK within policy.backupMaxAgeMinutes. */
   async assertBackupReady(site: SiteConfig, c: SiteConnection, backupId: string): Promise<void> {
-    const maxAge = this.policy(site).backupMaxAgeMinutes;
+    const policy = this.policy(site);
+    const maxAge = policy.backupMaxAgeMinutes;
     const hint = `Run backup_create (it verifies automatically) or backup_verify for site "${site.id}", then retry with that backupId.`;
     const backups = await this.s.backup.list(site, c);
     if (!backups.some((b) => b.backupId === backupId)) {
@@ -124,8 +145,11 @@ export class RunManager {
     if (!v || !v.ok) {
       throw new UserError(`Backup "${backupId}" has no passing verification. ${hint}`);
     }
-    const ageMin = (this.s.clock.now().getTime() - new Date(v.verifiedAt).getTime()) / 60_000;
-    if (!Number.isFinite(ageMin) || ageMin < -5 || ageMin > maxAge) {
+    const now = this.s.clock.now();
+    const ageMin = (now.getTime() - new Date(v.verifiedAt).getTime()) / 60_000;
+    // Tolerate up to 5 minutes of clock skew for a verification stamped "in the future".
+    const skewed = ageMin < 0 && ageMin >= -5 ? now : new Date(v.verifiedAt);
+    if (!new PolicyEngine(policy).backupFreshEnough(skewed, now)) {
       throw new UserError(
         `Backup "${backupId}" was verified ${Math.round(ageMin)} minutes ago; policy allows ${maxAge}. ${hint}`,
       );
@@ -172,13 +196,8 @@ export class RunManager {
         await this.persist(run);
 
         log('detecting updates');
-        const caps = await c.probe();
-        let items = await this.s.inventory.detect(c);
-        if (o.only) {
-          const keys = new Set(o.only);
-          items = items.filter((i) => keys.has(itemKey(i)));
-        }
-        const planned = this.s.inventory.plan(items, caps, policy).map((i) =>
+        const { plan } = await this.detectAndPlan(site, c, o.only);
+        const planned = plan.map((i) =>
           i.type === 'core' && i.isMajor && !coreMajorApproved
             ? {
                 ...i,
@@ -189,22 +208,11 @@ export class RunManager {
         run.plan = planned;
         await this.persist(run);
 
-        const held = planned.filter((i) => i.heldReason);
-        const toApply = planned.filter((i) => !i.heldReason);
-        const now = () => this.s.clock.now().toISOString();
-        for (const i of held) {
-          run.results.push({
-            item: i,
-            outcome: 'held',
-            startedAt: now(),
-            finishedAt: now(),
-            error: i.heldReason,
-            operations: [],
-          });
-        }
-        log(`${toApply.length} item(s) to apply, ${held.length} held`);
+        const held = planned.filter((i) => i.heldReason).length;
+        log(`${planned.length - held} item(s) to apply, ${held} held`);
 
-        for await (const r of this.s.updater.apply(site, c, toApply, {
+        // The whole plan goes to the updater; it reports held items itself, in plan order.
+        for await (const r of this.s.updater.apply(site, c, planned, {
           runId: run.runId,
           dryRun: o.dryRun,
           baseline: before,
@@ -252,7 +260,8 @@ export class RunManager {
         extras.verification = v;
         if (!v.ok) {
           run.status = 'needs-restore';
-          run.error = 'post-restore verification failed';
+          const bad = v.checks.filter((k) => !k.ok && k.severity === 'error').map((k) => k.name);
+          run.error = `post-restore verification failed: ${bad.join(', ') || 'unknown'}`;
         }
       },
       notify,

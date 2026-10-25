@@ -159,6 +159,26 @@ describe('DefaultRestoreService', () => {
     expect(f(`${DIR}/manifest.json`)).toBeDefined();
   });
 
+  it('does not try to carry over excluded paths inside the agent directory (the agent refuses them)', async () => {
+    const t = setup();
+    const manifest = {
+      ...t.manifest,
+      files: { ...t.manifest.files, excludes: ['auto-wp-backup', 'auto-wp-agent/.data'] },
+    };
+    t.conn.seed({ [`${DIR}/manifest.json`]: JSON.stringify(manifest) });
+    const jailed = (p: string) => p.startsWith('auto-wp-agent') || p.includes('/auto-wp-agent');
+    const stat = t.conn.stat.bind(t.conn);
+    t.conn.stat = async (p: string) => {
+      if (jailed(p)) throw new Error('path_jail: agent directory is off-limits');
+      return stat(p);
+    };
+    const p = await t.svc.plan(site, t.conn, ID, 'full');
+    expect(p.steps.find((x) => x.startsWith('files carry over'))).not.toContain('auto-wp-agent/.data');
+    const v = await t.svc.execute(site, t.conn, p, approve(p.planHash));
+    expect(v.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(v.ok).toBe(true);
+  });
+
   it('reports row-count mismatches', async () => {
     const t = setup();
     t.conn.onCall('db.info', () => ({

@@ -26,9 +26,42 @@ importers:
 
   apps/mcp-server:
     dependencies:
+      '@auto-wp/backup':
+        specifier: workspace:*
+        version: link:../../packages/backup
+      '@auto-wp/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@auto-wp/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@auto-wp/health':
+        specifier: workspace:*
+        version: link:../../packages/health
+      '@auto-wp/inventory':
+        specifier: workspace:*
+        version: link:../../packages/inventory
+      '@auto-wp/report':
+        specifier: workspace:*
+        version: link:../../packages/report
+      '@auto-wp/safety':
+        specifier: workspace:*
+        version: link:../../packages/safety
+      '@auto-wp/transport-agent':
+        specifier: workspace:*
+        version: link:../../packages/transport-agent
+      '@auto-wp/transport-ssh':
+        specifier: workspace:*
+        version: link:../../packages/transport-ssh
+      '@auto-wp/updater':
+        specifier: workspace:*
+        version: link:../../packages/updater
+      '@auto-wp/verify':
+        specifier: workspace:*
+        version: link:../../packages/verify
+      '@auto-wp/vulndb':
+        specifier: workspace:*
+        version: link:../../packages/vulndb
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.7)

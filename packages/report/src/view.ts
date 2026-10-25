@@ -15,8 +15,11 @@ export interface VulnRowView {
   cvss: string;
   affected: string;
   fixedIn: string;
+  /** True only when the new version was looked up and is not affected. */
   fixedByUpdate: boolean;
   stillAffectingNew: boolean;
+  /** The new-version lookup failed, so whether the update fixes this is unknown. */
+  fixUnknown: boolean;
 }
 
 export interface ItemView {
@@ -26,6 +29,8 @@ export interface ItemView {
   rows: VulnRowView[];
   sources: string[];
   errors: string[];
+  /** Some vulnerability lookup failed: "no known vulnerabilities" must not be claimed. */
+  incomplete: boolean;
 }
 
 export interface ArtifactView {
@@ -89,6 +94,7 @@ const ARROW = ' → ';
 
 function vulnRows(a: ItemVulnAssessment): VulnRowView[] {
   const stillIds = new Set(a.stillAffectingNew.map((v) => v.id));
+  const newUnknown = a.lookupFailed?.new === true;
   const seen = new Set<string>();
   const all: Vulnerability[] = [...a.affectingOld, ...a.stillAffectingNew];
   const rows: VulnRowView[] = [];
@@ -102,8 +108,9 @@ function vulnRows(a: ItemVulnAssessment): VulnRowView[] {
       cvss: formatCvss(v.cvss),
       affected: v.affected.map(formatRange).join(', ') || 'all versions',
       fixedIn: v.fixedIn ?? '—',
-      fixedByUpdate: !stillIds.has(v.id),
+      fixedByUpdate: !newUnknown && !stillIds.has(v.id),
       stillAffectingNew: stillIds.has(v.id),
+      fixUnknown: newUnknown && !stillIds.has(v.id),
     });
   }
   return rows;
@@ -117,6 +124,7 @@ function itemView(a: ItemVulnAssessment): ItemView {
     rows: vulnRows(a),
     sources: a.sources,
     errors: a.errors,
+    incomplete: a.errors.length > 0 || a.lookupFailed?.old === true || a.lookupFailed?.new === true,
   };
 }
 

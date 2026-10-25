@@ -42,15 +42,24 @@ Runs and must pass now (`tests/env.e2e.test.ts`): healthy environment, seeded ve
 `known_hosts` refused under `StrictHostKeyChecking=yes`, password auth refused, breaker v2 really fatals the site and
 restoring v1 fixes it, mock feed and zip served, `wp-locked` has exec disabled (HTTP-served probe).
 
-Gated behind `AUTOWP_E2E_REAL=1` (`tests/scenario.e2e.test.ts`): the full MCP flow (probe, backup, verify, updates
-check/apply, report, restore, audit) over `StdioClientTransport`. The MCP server uses FAKE services until the
-integration step, so these are skipped by default; tool-result shapes are matched loosely and will need tightening
-once real services are wired. The `site-agent` scenario additionally needs `agent-php/dist/agent.php`: `seed.sh`
-installs it on `wp-locked` via `agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id <vector keyId>
---ed25519-public-key <vector pubkey> --force` (set `AUTOWP_AGENT_PHP_DIR` to use another checkout) and `up.sh` sets
-`AUTOWP_E2E_AGENT=1` when it succeeded. The agent signing key is exported as `AUTOWP_SECRET_SITE_AGENT_SIGNING_KEY`
-(secret-store wiring is pending).
+Gated behind `AUTOWP_E2E_REAL=1` (`tests/scenario.e2e.test.ts`): the full MCP flow over `StdioClientTransport`
+against the real services, for `site-ssh` and (when the agent installed) `site-agent`: probe, protected backup,
+verify (and a tampered copy failing), `updates_check` with the mock-feed CVEs, a no-op dry run, the real apply
+(contact-form-7 and the theme updated, `autowp-breaker` rolled back, site 200, no `.maintenance`), the report
+sections, an approved DB restore matching row counts, a full restore back to the seeded versions, and the audit
+log. The `site-agent` scenario needs `agent-php/dist/agent.php`: `seed.sh` installs it on `wp-locked` via
+`agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id <vector keyId> --ed25519-public-key
+<vector pubkey> --allow-data-in-docroot --allow-insecure-http --force` (set `AUTOWP_AGENT_PHP_DIR` to use another
+checkout) and `up.sh` sets `AUTOWP_E2E_AGENT=1` when it succeeded. The agent signing key reaches the server as
+`AUTOWP_SECRET_SITE_AGENT_SIGNING_KEY` (the env overlay of the secret store); `AUTOWP_WORDFENCE_MIN_RECORDS=1`
+lets the 3-record mock feed through the truncation guard.
+
+Environment quirks the harness works around: the MariaDB 11 client in `wp-ssh` insists on TLS, which the
+MariaDB 10.11 server lacks, and WP-CLI runs it with `--no-defaults`, so `/usr/local/bin/{mariadb,mysql,...}` wrap it
+with `--skip-ssl`. The `fake-updates` mu-plugin pins the contact-form-7 (5.8.4) and twentytwentyfour (1.1) offers: wordpress.org's
+current contact-form-7 needs a newer core, and a DB restore can bring back an update transient without the theme offer. After a full restore, Apache's PHP workers can fatal on stale `realpath()`
+cache entries for files the restore removed for up to `realpath_cache_ttl` (120 s); the scenarios wait it out.
 
 `AUTOWP_E2E=1` is required; with it set but `e2e/.tmp/env` missing, the run fails loudly ("run up.sh first").
 
-The apply scenario passes `only` (cf7, theme, breaker) so core and classic-editor stay untouched.
+The apply scenarios pass `only` (cf7, theme, breaker) so core and classic-editor stay untouched.

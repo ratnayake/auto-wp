@@ -440,7 +440,9 @@ export class SshSiteConnection implements SiteConnection {
     const p = actionSchemas[action].params.safeParse(params);
     if (!p.success) throw new AgentError('invalid_params', `invalid ${action} params: ${p.error.message}`);
     const { agentPath } = await this.ensureTools();
-    const r = await this.exec([this.config.phpBinary, agentPath, '--cli', action], {
+    // The agent has no config of its own over SSH: tell it which WordPress root to work on.
+    const argv = [this.config.phpBinary, agentPath, '--cli', action, '--wp-root', this.config.wpRoot];
+    const r = await this.exec(argv, {
       stdin: JSON.stringify(p.data),
       timeoutMs: timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
     });
@@ -556,7 +558,33 @@ export class SshSiteConnection implements SiteConnection {
     if ((await this.jail.isRootOrAncestor(lexical)) || (await this.jail.isRootOrAncestor(real))) {
       throw new PathJailError(`refusing to remove a jail root or one of its ancestors: ${path}`);
     }
-    await this.removeReal(await this.sftp(), real, o.recursive ?? false);
+    const sftp = await this.sftp();
+    if (o.recursive && (await this.removeTreeWithShell(sftp, real))) return;
+    await this.removeReal(sftp, real, o.recursive ?? false);
+  }
+
+  /**
+   * A tree removed one SFTP round trip per entry takes minutes for a WordPress-sized tree (e.g. a pruned
+   * backup holding a pre-restore copy of the site), so directories go through `rm -rf` (which never follows
+   * symlinks) on the already-jailed real path. Returns false to fall back to SFTP.
+   */
+  private async removeTreeWithShell(sftp: Sftp, real: string): Promise<boolean> {
+    const a = await sftp.lstat(real);
+    if (!a || toFileStat(real, a).type !== 'dir') return false;
+    try {
+      // Re-resolve right before deleting so a component swapped for a symlink since the jail check is refused.
+      const script = '[ "$(realpath -e -- "$1")" = "$1" ] && exec rm -rf -- "$1"';
+      const r = await this.run(buildCommand(['sh', '-c', script, 'sh', real]), undefined, 30 * 60_000);
+      if (r.exitCode !== 0) {
+        this.deps.logger.warn(
+          { siteId: this.siteId, err: r.stderr.slice(0, 200) },
+          'rm -rf failed; using SFTP',
+        );
+      }
+    } catch (e) {
+      this.deps.logger.warn({ siteId: this.siteId, err: String(e) }, 'rm -rf failed; using SFTP');
+    }
+    return (await sftp.lstat(real)) === null;
   }
 
   private async removeReal(sftp: Sftp, real: string, recursive: boolean): Promise<void> {

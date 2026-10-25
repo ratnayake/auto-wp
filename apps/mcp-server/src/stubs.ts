@@ -175,7 +175,9 @@ export class StubUpdater implements Updater {
     for (const it of plan) {
       const startedAt = this.clock.now().toISOString();
       const base = { item: it, startedAt, finishedAt: startedAt };
-      if (o.dryRun) {
+      if (it.heldReason) {
+        yield { ...base, outcome: 'held', error: it.heldReason, operations: [] };
+      } else if (o.dryRun) {
         yield {
           ...base,
           outcome: 'dry-run',

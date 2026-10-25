@@ -59,13 +59,20 @@ export const BAD: ComparisonResult = { ok: false, pages: [], newLogErrors: ['PHP
 
 /** Health checker answering from a script of results (or throwing Errors); default ok. */
 export class FakeHealth implements HealthChecker {
-  readonly calls: Array<{ bypassCookie?: string }> = [];
+  readonly calls: Array<{ bypassToken?: string }> = [];
+  readonly baselines: HealthSnapshot[] = [];
   constructor(public script: Array<ComparisonResult | Error> = []) {}
   async snapshot(): Promise<HealthSnapshot> {
     return baseline;
   }
-  async quick(s: SiteConfig, _c: SiteConnection, _b: HealthSnapshot): Promise<ComparisonResult> {
-    this.calls.push({ bypassCookie: (s as SiteConfig & { bypassCookie?: string }).bypassCookie });
+  async quick(
+    _s: SiteConfig,
+    _c: SiteConnection,
+    b: HealthSnapshot,
+    o?: { bypassToken?: string },
+  ): Promise<ComparisonResult> {
+    this.calls.push({ bypassToken: o?.bypassToken });
+    this.baselines.push(b);
     const next = this.script.shift() ?? OK;
     if (next instanceof Error) throw next;
     return next;
@@ -107,6 +114,12 @@ export function fakeWp(o: { shell?: boolean } = {}) {
       return dbState;
     },
     upgradeFiles: true,
+    /** Versions WordPress offers (what `wp plugin update <slug>` installs). */
+    offers: new Map<string, string>([
+      ['plugin:foo', '1.1.0'],
+      ['plugin:bar', '2.1.0'],
+      ['theme:twenty', '1.1'],
+    ]),
   };
 
   const archive = (dest: string, paths: string[]) => {
@@ -215,7 +228,8 @@ export function fakeWp(o: { shell?: boolean } = {}) {
         return ok();
       }
       if ((a[1] === 'plugin' || a[1] === 'theme') && a[2] === 'update') {
-        upgrade(a[1], a[3] ?? '', version);
+        // Without --version WP-CLI installs the offered package.
+        upgrade(a[1], a[3] ?? '', version || (state.offers.get(`${a[1]}:${a[3]}`) ?? ''));
         return ok();
       }
       if ((a[1] === 'plugin' || a[1] === 'theme') && a[2] === 'get')

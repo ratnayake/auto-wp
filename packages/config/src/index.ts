@@ -23,6 +23,7 @@ export {
   EncryptedFileSecretStore,
   type EncryptedFileSecretStoreOptions,
 } from './secrets/encrypted-file-store.js';
+export { EnvOverlaySecretStore, secretEnvVar } from './secrets/env-overlay-store.js';
 export { KeyringSecretStore, type KeyringSecretStoreOptions } from './secrets/keyring-store.js';
 export { redact, Secret } from './secrets/secret.js';
 export { parseSiteConfig, resolveSitePolicy } from './site-policy.js';

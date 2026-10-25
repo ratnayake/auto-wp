@@ -50,7 +50,7 @@ AUTOWP-SIG-V1
 6. Nonce not seen within 600 s (stored in a `flock`ed file inside the agent's private data dir); then record it.
 7. Action in allowlist; params validated.
 
-**Any failure in steps 1–6 → HTTP 404 with an empty body** (indistinguishable from a missing file). Failures are logged to the agent's audit log without secrets.
+**Any failure in steps 1–6 → an empty HTTP 404** (no body and no reason given; it is not guaranteed to look identical to the web server's own 404 page). Failures are logged to the agent's audit log without secrets.
 
 ## Response
 

@@ -7,7 +7,10 @@ import {
   type Capabilities,
   type Check,
   type Clock,
+  DB_ARTIFACT,
+  FILES_ARTIFACT,
   type Logger,
+  MANIFEST_FILE,
   type RestorePlan,
   type RestoreService,
   type SiteConfig,
@@ -18,10 +21,6 @@ import { canonicalJson, sha256Hex } from './canonical-json.js';
 import { agentLocation, assertSafeId, backupRootCandidates } from './paths.js';
 import { Remote } from './remote.js';
 import { msg } from './util.js';
-
-export const MANIFEST_FILE = 'manifest.json';
-export const DB_ARTIFACT = 'db.sql.gz';
-export const FILES_ARTIFACT = 'files.tar.gz';
 
 export class RestoreRefusedError extends Error {
   override name = 'RestoreRefusedError';
@@ -274,6 +273,9 @@ function fileRules(
     else if (!p.includes('/')) keep.add(p);
     else carry.add(p);
   }
+  // Paths under a top-level entry that is never moved (e.g. the agent's own `auto-wp-agent/.data`) stay in
+  // place, so there is nothing to carry over; the agent also refuses fs.* calls on its own directory.
+  for (const p of [...carry]) if (keep.has(p.split('/')[0] ?? '')) carry.delete(p);
   return { keep, carry: [...carry].sort(), globs };
 }
 

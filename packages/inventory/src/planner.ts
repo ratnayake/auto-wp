@@ -1,17 +1,17 @@
 import { type Capabilities, itemKey, type Policy, type UpdateItem } from '@auto-wp/contracts';
-import { type InventoryItem, isNewer } from './item.js';
+import { isNewer } from './item.js';
 import { topoSort } from './topo.js';
 import { versionCompare } from './version-compare.js';
 
 const byString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const pluginOrder = (a: InventoryItem, b: InventoryItem): number =>
+const pluginOrder = (a: UpdateItem, b: UpdateItem): number =>
   Number(!a.active) - Number(!b.active) || byString(a.slug, b.slug);
-const themeOrder = (a: InventoryItem, b: InventoryItem): number => byString(a.slug, b.slug);
+const themeOrder = (a: UpdateItem, b: UpdateItem): number => byString(a.slug, b.slug);
 // Dependency lists use itemKey form so they match the keys handed to topoSort.
-const requiredPlugins = (i: InventoryItem): string[] => (i.requiresPlugins ?? []).map((s) => `plugin:${s}`);
-const parentOf = (i: InventoryItem): string[] => (i.parentTheme ? [`theme:${i.parentTheme}`] : []);
+const requiredPlugins = (i: UpdateItem): string[] => (i.requiresPlugins ?? []).map((s) => `plugin:${s}`);
+const parentOf = (i: UpdateItem): string[] => (i.parentTheme ? [`theme:${i.parentTheme}`] : []);
 
-const withoutHold = (i: InventoryItem): UpdateItem => {
+const withoutHold = (i: UpdateItem): UpdateItem => {
   const { heldReason: _previous, ...rest } = i;
   return rest;
 };
@@ -21,7 +21,7 @@ const withoutHold = (i: InventoryItem): UpdateItem => {
  * the core update's newVersion when core is applied, otherwise the installed version (undefined if unknown).
  */
 function holdReasonFor(
-  i: InventoryItem,
+  i: UpdateItem,
   caps: Capabilities,
   policy: Policy,
   plannedCore: string | undefined,
@@ -47,7 +47,7 @@ function holdReasonFor(
  * item's currentVersion. When neither is known, requiresWp cannot be checked.
  */
 export function planUpdates(
-  items: InventoryItem[],
+  items: UpdateItem[],
   caps: Capabilities,
   policy: Policy,
   installedCore?: string,
@@ -69,7 +69,7 @@ export function planUpdates(
   const live = candidates.filter((i) => !holds.has(itemKey(i)));
 
   // Needs a core newer than the installed one, so it must follow the core update. Its dependents follow it.
-  const needsNewCore = (i: InventoryItem): boolean =>
+  const needsNewCore = (i: UpdateItem): boolean =>
     i.type !== 'core' && !!installed && !!i.requiresWp && isNewer(i.requiresWp, installed);
   const deferred = new Set(live.filter(needsNewCore).map(itemKey));
   for (let changed = true; changed; ) {

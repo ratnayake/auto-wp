@@ -1,12 +1,12 @@
-import type { Capabilities, SiteConnection } from '@auto-wp/contracts';
+import type { Capabilities, SiteConnection, UpdateItem } from '@auto-wp/contracts';
 import { z } from 'zod';
-import { buildItem, type InventoryItem, isNewer, sourceOf } from './item.js';
+import { buildItem, isNewer, sourceOf } from './item.js';
 import { extractJson, extractSlug, extractVersion, SLUG_PATTERN, VERSION_PATTERN } from './wp-output.js';
 
 export interface ShellDetection {
   /** Installed WordPress core version. Known even when no core update is pending. */
   installedCore: string;
-  items: InventoryItem[];
+  items: UpdateItem[];
 }
 
 export interface ShellLog {
@@ -19,12 +19,14 @@ const READ_ONLY_FLAGS = ['--skip-plugins', '--skip-themes'] as const;
 const WpCliCoreUpdate = z.array(
   z.object({ version: z.string(), update_type: z.string().optional(), package_url: z.string().optional() }),
 );
+/** `update` is `available` / `none` / `unavailable` (needs newer WP/PHP), or `false` for must-use plugins. */
+const UpdateStatus = z.union([z.string(), z.boolean()]);
 const WpCliPlugin = z.object({
   name: z.string(),
   title: z.string().optional(),
   status: z.string(),
   version: z.string(),
-  update: z.string(),
+  update: UpdateStatus,
   update_version: z.string().nullish(),
   file: z.string().optional(),
 });
@@ -33,7 +35,7 @@ const WpCliTheme = z.object({
   title: z.string().optional(),
   status: z.string(),
   version: z.string(),
-  update: z.string(),
+  update: UpdateStatus,
   update_version: z.string().nullish(),
 });
 
@@ -63,6 +65,16 @@ function hintFor(entries: Record<string, unknown>, key: string): UpdateHint | un
     ...(nonEmptyString(o.requires_php) ? { requires_php: nonEmptyString(o.requires_php) } : {}),
     requires_plugins: plugins.filter((s): s is string => typeof s === 'string' && SLUG_PATTERN.test(s)),
   };
+}
+
+/**
+ * `available` offers are items. `unavailable` ones (WordPress knows a newer version but the site's WP/PHP is
+ * too old) are kept only when the requirement is known, so the planner holds them with a reason instead of
+ * the update silently disappearing; without the requirement the updater could not apply them anyway.
+ */
+function offered(update: string | boolean, hint: UpdateHint | undefined): boolean {
+  if (update === 'available') return true;
+  return update === 'unavailable' && !!(hint?.requires || hint?.requires_php);
 }
 
 function parseList<T>(stdout: string, schema: z.ZodType<T[]>, what: string): T[] {
@@ -100,7 +112,7 @@ export async function detectFromShell(
   const installedCore = extractVersion(await run(['core', 'version']));
   if (!installedCore) throw new Error('could not determine WordPress core version');
 
-  const items: InventoryItem[] = [];
+  const items: UpdateItem[] = [];
 
   const coreUpdates = parseList(
     await run(['core', 'check-update', '--format=json']),
@@ -146,12 +158,13 @@ export async function detectFromShell(
   const pluginHints = asRecord((await transient('_site_transient_update_plugins')).response);
   for (const p of plugins) {
     if (NEVER_UPDATED.has(p.status) || p.file?.startsWith('mu-plugins/')) continue;
-    if (p.update !== 'available' || !p.update_version || !isNewer(p.update_version, p.version)) continue;
+    if (!p.update_version || !isNewer(p.update_version, p.version)) continue;
+    const hint = p.file ? hintFor(pluginHints, p.file) : undefined;
+    if (!offered(p.update, hint)) continue;
     if (!SLUG_PATTERN.test(p.name)) {
       log.warn('skipping plugin with unexpected slug');
       continue;
     }
-    const hint = p.file ? hintFor(pluginHints, p.file) : undefined;
     items.push(
       buildItem({
         type: 'plugin',
@@ -175,12 +188,13 @@ export async function detectFromShell(
   );
   const themeHints = asRecord((await transient('_site_transient_update_themes')).response);
   for (const t of themes) {
-    if (t.update !== 'available' || !t.update_version || !isNewer(t.update_version, t.version)) continue;
+    if (!t.update_version || !isNewer(t.update_version, t.version)) continue;
+    const hint = hintFor(themeHints, t.name);
+    if (!offered(t.update, hint)) continue;
     if (!SLUG_PATTERN.test(t.name)) {
       log.warn('skipping theme with unexpected slug');
       continue;
     }
-    const hint = hintFor(themeHints, t.name);
     const parentTheme = await parentOfTheme(c, bin, caps.wpRoot, t.name);
     items.push(
       buildItem({

@@ -6,7 +6,8 @@ import { DAY_MS, type Fetch, readJson, writeJsonAtomic } from './util.js';
 export const DEFAULT_WPSCAN_BASE_URL = 'https://wpscan.com/api/v3';
 
 export interface WpscanOptions {
-  token: string;
+  /** API token, or a function resolving it (e.g. from the SecretStore) when the first request is made. */
+  token: string | (() => Promise<string>);
   cacheDir: string;
   clock: Clock;
   logger?: Logger;
@@ -103,6 +104,10 @@ export class WpscanProvider implements VulnProvider {
     return all;
   }
 
+  private async tokenValue(): Promise<string> {
+    return typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
+  }
+
   private async fetchPath(path: string): Promise<Vulnerability[]> {
     const now = this.opts.clock.now();
     this.cache ??= (await readJson<Record<string, CacheEntry>>(this.cachePath)) ?? {};
@@ -117,7 +122,7 @@ export class WpscanProvider implements VulnProvider {
     await writeJsonAtomic(this.quotaPath, quota);
 
     const res = await this.fetchImpl(`${this.base}/${path}`, {
-      headers: { Authorization: `Token token=${this.opts.token}`, Accept: 'application/json' },
+      headers: { Authorization: `Token token=${await this.tokenValue()}`, Accept: 'application/json' },
       signal: AbortSignal.timeout(30_000),
     });
     let vulns: Vulnerability[] = [];

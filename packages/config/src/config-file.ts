@@ -4,7 +4,7 @@ import YAML, { YAMLParseError } from 'yaml';
 import { atomicWriteFile } from './atomic-file.js';
 import { ConfigError, errorCode, firstLine, formatIssues } from './errors.js';
 import { expandHome, resolveConfigPath } from './paths.js';
-import { parseSiteConfig, withExplicitPolicy } from './site-policy.js';
+import { parseSiteConfig } from './site-policy.js';
 
 export interface LoadConfigOptions {
   /** Return an empty config instead of failing when the file does not exist yet. */
@@ -52,12 +52,8 @@ export function parseAppConfig(doc: unknown, source: string): AppConfig {
   if (!parsed.success)
     throw new ConfigError(`invalid config ${source}:\n${formatIssues(parsed.error.issues)}`);
 
-  const rawSites: unknown[] = Array.isArray((input as { sites?: unknown }).sites)
-    ? (input as { sites: unknown[] }).sites
-    : [];
   return {
     ...parsed.data,
-    sites: parsed.data.sites.map((site, i) => withExplicitPolicy(site, rawSites[i])),
     stateDir: expandHome(parsed.data.stateDir),
     dataDir: expandHome(parsed.data.dataDir),
   };

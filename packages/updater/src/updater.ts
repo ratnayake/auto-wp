@@ -31,7 +31,14 @@ export interface DefaultUpdaterDeps {
   needsDbSnapshot?: NeedsDbSnapshot;
   /** Default for `DefaultUpdaterOptions.stopOnFailure`. */
   stopOnFailure?: boolean;
+  /** Injected for tests (default: setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Post-rollback health check tries and pause between them (default 3 tries, 2000 ms apart). */
+  rollbackHealthAttempts?: number;
+  rollbackHealthDelayMs?: number;
 }
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface DefaultUpdaterOptions extends UpdaterOptions {
   /** Stop after any rolled-back failure (default false). A core failure always stops the run. */
@@ -156,6 +163,11 @@ export class DefaultUpdater implements Updater {
         clock,
         token: this.deps.randomToken ?? randomBypassToken,
         needsDb: this.deps.needsDbSnapshot ?? defaultNeedsDbSnapshot,
+        sleep: this.deps.sleep ?? defaultSleep,
+        rollbackHealth: {
+          attempts: this.deps.rollbackHealthAttempts ?? 3,
+          delayMs: this.deps.rollbackHealthDelayMs ?? 2000,
+        },
       };
 
       let stopReason: string | undefined;
@@ -170,6 +182,20 @@ export class DefaultUpdater implements Updater {
           continue;
         }
         const now = clock.now().toISOString();
+        if (item.heldReason) {
+          const r: ItemResult = {
+            item,
+            outcome: 'held',
+            startedAt: now,
+            finishedAt: now,
+            error: item.heldReason,
+            operations: [`held: ${item.heldReason}`],
+          };
+          results.set(key, r);
+          await persist();
+          yield r;
+          continue;
+        }
         if (stopReason) {
           const r: ItemResult = {
             item,
@@ -178,19 +204,6 @@ export class DefaultUpdater implements Updater {
             finishedAt: now,
             error: stopReason,
             operations: [],
-          };
-          results.set(key, r);
-          await persist();
-          yield r;
-          continue;
-        }
-        if (item.heldReason) {
-          const r: ItemResult = {
-            item,
-            outcome: 'held',
-            startedAt: now,
-            finishedAt: now,
-            operations: [`held: ${item.heldReason}`],
           };
           results.set(key, r);
           await persist();

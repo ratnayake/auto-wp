@@ -1,20 +1,19 @@
+import {
+  MANIFEST_FILE as CONTRACT_MANIFEST_FILE,
+  DB_ARTIFACT,
+  DEFAULT_BACKUP_EXCLUDES,
+  FILES_ARTIFACT,
+  MANIFEST_SIG_FILE,
+} from '@auto-wp/contracts';
+
 export const BACKUP_ID_RE = /^\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 
-export const BACKUP_EXCLUDES: readonly string[] = [
-  'auto-wp-backup',
-  'auto-wp-agent/.data',
-  'wp-content/cache',
-  'wp-content/updraft',
-  'wp-content/ai1wm-backups',
-  'wp-content/backups-dup-lite',
-  'wp-content/uploads/backup*',
-  '*.log',
-];
-
-export const DB_FILE = 'db.sql.gz';
-export const FILES_FILE = 'files.tar.gz';
-export const MANIFEST_FILE = 'manifest.json';
-export const SIG_FILE = 'manifest.json.sig';
+/** Layout names come from contracts (`backup-layout.ts`); these aliases keep this package's API stable. */
+export const BACKUP_EXCLUDES: readonly string[] = DEFAULT_BACKUP_EXCLUDES;
+export const DB_FILE = DB_ARTIFACT;
+export const FILES_FILE = FILES_ARTIFACT;
+export const MANIFEST_FILE = CONTRACT_MANIFEST_FILE;
+export const SIG_FILE = MANIFEST_SIG_FILE;
 export const CANARY_FILE = 'canary.txt';
 
 export const FETCH_TIMEOUT_MS = 15_000;

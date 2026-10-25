@@ -7,31 +7,33 @@ import {
   type BackupManifest,
   BackupManifestSchema,
   type BackupService,
+  backupRunDir,
   type Capabilities,
   type Clock,
+  DB_ARTIFACT as DB_FILE,
+  DEFAULT_BACKUP_EXCLUDES,
+  FILES_ARTIFACT as FILES_FILE,
   type Logger,
+  MANIFEST_FILE,
   mergePolicy,
+  type Policy,
   PolicySchema,
+  MANIFEST_SIG_FILE as SIG_FILE,
   type SiteConfig,
   type SiteConnection,
   TOOL_VERSION,
 } from '@auto-wp/contracts';
 import {
-  BACKUP_EXCLUDES,
   BACKUP_ID_RE,
   CANARY_FILE,
-  DB_FILE,
   DISK_SAFETY_FACTOR,
   EST_BYTES_PER_ROW,
   EXEC_TIMEOUT_MS,
   FETCH_TIMEOUT_MS,
-  FILES_FILE,
   HTACCESS,
   INDEX_PHP,
   LOCK_TTL_SEC,
-  MANIFEST_FILE,
   MYSQLDUMP_SCRIPT,
-  SIG_FILE,
   WEB_CONFIG,
   WPCLI_DUMP_SCRIPT,
 } from './constants.js';
@@ -58,6 +60,8 @@ export interface BackupServiceDeps {
   clock: Clock;
   fetch: typeof fetch;
   dataDir: string;
+  /** App-level policy; each site's effective policy is `mergePolicy(policy, site.policy)`. Default: schema defaults. */
+  policy?: Policy;
   /** Signs the exact bytes of manifest.json; the signature is stored base64 in manifest.json.sig. */
   signManifest?: (bytes: Buffer) => Promise<Buffer>;
   /** Verifies manifest.json.sig when pulling; a failed or missing signature rejects the pull. */
@@ -104,7 +108,7 @@ export class DefaultBackupService implements BackupService {
     };
     const caps = await conn.probe();
     const id = this.newId();
-    const excludes = [...BACKUP_EXCLUDES];
+    const excludes = [...DEFAULT_BACKUP_EXCLUDES];
     const pull = o.pull ?? true;
     const retention = this.retention(site);
 
@@ -191,8 +195,7 @@ export class DefaultBackupService implements BackupService {
   }
 
   private retention(site: SiteConfig): { remote: number; local: number } {
-    // Site overrides only; the app-level policy is merged in by the caller once wired (see mergePolicy).
-    return mergePolicy(PolicySchema.parse({}), site.policy).retention;
+    return mergePolicy(this.deps.policy ?? PolicySchema.parse({}), site.policy).retention;
   }
 
   private initialLocation(site: SiteConfig, caps: Capabilities): Location {
@@ -207,10 +210,10 @@ export class DefaultBackupService implements BackupService {
     return 'docroot';
   }
 
-  private baseDir(caps: Capabilities, loc: Location): string {
+  private runDir(caps: Capabilities, loc: Location, id: string): string {
     const root = loc === 'outside' ? caps.outsideDocrootDir : caps.wpRoot;
     if (!root) throw new BackupError('no writable directory above the docroot');
-    return posix.join(root, BACKUP_DIR_NAME);
+    return backupRunDir(root, id);
   }
 
   private async runWithProtection(
@@ -223,7 +226,7 @@ export class DefaultBackupService implements BackupService {
   ): Promise<{ manifest: BackupManifest; dir: string }> {
     let loc = first;
     for (;;) {
-      const dir = posix.join(this.baseDir(caps, loc), id);
+      const dir = this.runDir(caps, loc, id);
       try {
         await this.prepare(conn, dir);
         let problems: string[] = [];
@@ -430,6 +433,14 @@ export class DefaultBackupService implements BackupService {
   ): Promise<{ method: 'tar' | 'native'; count: number; bytes: number }> {
     const dest = posix.join(dir, FILES_FILE);
     if (caps.shell && caps.binaries.tar) {
+      // Name the top-level entries instead of `.` so archive paths are relative to the WP root with no
+      // leading `./` (see contracts backup-layout).
+      const skip = new Set(ctx.excludes.filter((e) => !/[/*?[]/.test(e)));
+      const entries = (await conn.list(caps.wpRoot))
+        .map((e) => posix.basename(e.path))
+        .filter((n) => !skip.has(n))
+        .sort();
+      if (entries.length === 0) throw new BackupError(`WordPress root ${caps.wpRoot} is empty`);
       const argv = [
         caps.binaries.tar,
         '-czf',
@@ -437,7 +448,8 @@ export class DefaultBackupService implements BackupService {
         ...ctx.excludes.map((e) => `--exclude=${e}`),
         '-C',
         caps.wpRoot,
-        '.',
+        '--',
+        ...entries,
       ];
       // exit 1 = "file changed as we read it", normal on a live site
       await this.sh(conn, argv, [0, 1]);
@@ -631,7 +643,7 @@ export class DefaultBackupService implements BackupService {
       disk: BackupPreview['disk'];
     },
   ): Promise<BackupPreview> {
-    const dir = posix.join(this.baseDir(caps, loc), id);
+    const dir = this.runDir(caps, loc, id);
     const base = posix.dirname(dir);
     const existing = (await this.listRemote(site, conn, caps)).map((e) => e.manifest);
     const remotePrune = selectPrune(

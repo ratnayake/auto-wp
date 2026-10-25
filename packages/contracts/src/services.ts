@@ -69,9 +69,21 @@ export interface BackupVerifier {
   ): Promise<VerificationResult>;
 }
 
+export interface InventoryDetection {
+  /** Installed WordPress version, known even when no core update is pending. */
+  installedCore: string;
+  items: UpdateItem[];
+}
+
 export interface InventoryService {
   detect(c: SiteConnection): Promise<UpdateItem[]>;
-  plan(items: UpdateItem[], caps: Capabilities, policy: Policy): UpdateItem[];
+  /** Like `detect`, plus the installed core version (used by `plan` to check `requiresWp`). Optional. */
+  inspect?(c: SiteConnection): Promise<InventoryDetection>;
+  /**
+   * Orders items and marks held ones (`heldReason`). `installedCore` (from `inspect`) lets `requiresWp` be
+   * checked when no core update is pending.
+   */
+  plan(items: UpdateItem[], caps: Capabilities, policy: Policy, installedCore?: string): UpdateItem[];
 }
 
 export interface VulnProvider {

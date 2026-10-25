@@ -128,7 +128,11 @@ export const actionSchemas = {
   /** Extract a .tar.gz into `destDir`. Long-running (job). */
   'fs.extract': {
     params: z.object({ archive: RelPath, destDir: RelPath, overwrite: z.boolean().default(true) }),
-    result: z.object({ fileCount: z.number().int() }),
+    result: z.object({
+      fileCount: z.number().int(),
+      /** Symlink / hard-link entries the agent refused to extract. */
+      skippedLinks: z.number().int().optional(),
+    }),
   },
   'fs.count': {
     params: z.object({ dir: RelPath, excludes: Excludes }),
@@ -176,7 +180,14 @@ export const actionSchemas = {
     result: z.object({ fromVersion: z.string(), toVersion: z.string(), messages: z.array(z.string()) }),
   },
   'wp.maintenance': {
-    params: z.object({ enabled: z.boolean(), bypassToken: z.string().min(16).optional() }),
+    params: z.object({
+      enabled: z.boolean(),
+      /** Maintenance bypass cookie value; URL/cookie-safe characters only. */
+      bypassToken: z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{16,128}$/, 'bypassToken must match [A-Za-z0-9_-]{16,128}')
+        .optional(),
+    }),
     result: z.object({ enabled: z.boolean() }),
   },
   'logs.tail': {

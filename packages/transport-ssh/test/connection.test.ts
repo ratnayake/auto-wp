@@ -204,6 +204,31 @@ describe('file operations', () => {
     expect(await h.conn.stat('a')).toBeNull();
   });
 
+  it('removes a directory tree with one rm -rf (jailed real path), SFTP as fallback', async () => {
+    const h = await makeHarness();
+    await h.conn.mkdir('big/x/y', { recursive: true });
+    await h.conn.writeFile('big/x/y/f.txt', 'x');
+    h.client.execHandler = (cmd) => {
+      if (cmd.includes(`exec rm -rf -- "$1"' 'sh' '/home/u/public_html/big'`))
+        for (const k of [...h.sftp.files.keys()])
+          if (k.startsWith('/home/u/public_html/big')) h.sftp.files.delete(k);
+      return { stdout: '' };
+    };
+    const unlink = h.sftp.unlink.bind(h.sftp);
+    let unlinks = 0;
+    h.sftp.unlink = (p, cb) => {
+      unlinks++;
+      return unlink(p, cb);
+    };
+    // The fake rm only drops files; the empty dirs left behind are cleaned via the SFTP fallback.
+    await h.conn.remove('big', { recursive: true });
+    expect(
+      h.client.commands.some((c) => c.includes(`exec rm -rf -- "$1"' 'sh' '/home/u/public_html/big'`)),
+    ).toBe(true);
+    expect(unlinks).toBe(0);
+    expect(await h.conn.stat('big')).toBeNull();
+  });
+
   it('refuses to remove wpRoot', async () => {
     const h = await makeHarness();
     await expect(h.conn.remove('.', { recursive: true })).rejects.toBeInstanceOf(PathJailError);
@@ -221,7 +246,7 @@ describe('call', () => {
     const r = await h.conn.call('fs.sha256', { path: 'x' });
     expect(r).toEqual({ sha256: 'abc', bytes: 3 });
     expect(seen[0]).toBe(
-      `echo "AUTOWP_PID=$$" >&2; cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256'`,
+      `echo "AUTOWP_PID=$$" >&2; cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256' '--wp-root' '/home/u/public_html'`,
     );
     expect(JSON.parse(seen[1] ?? '')).toEqual({ path: 'x' });
     expect(h.sftp.files.get(AGENT)?.toString()).toBe('<?php // agent');

@@ -1,6 +1,11 @@
 import type { Capabilities, ExecResult, ItemType, SiteConnection } from '@auto-wp/contracts';
 import { absPath } from './paths.js';
 
+/** A remote command ran to completion with a non-zero exit code. */
+export class WpCliExitError extends Error {
+  override name = 'WpCliExitError';
+}
+
 /** Thin helpers that pick SSH/WP-CLI execution when available and fall back to agent actions. */
 export class Remote {
   constructor(
@@ -24,7 +29,7 @@ export class Remote {
     const r = await this.c.exec(argv, { cwd: this.caps.wpRoot });
     if (r.exitCode !== 0) {
       const detail = (r.stderr || r.stdout).trim().slice(0, 500);
-      throw new Error(`${what} failed (exit ${r.exitCode})${detail ? `: ${detail}` : ''}`);
+      throw new WpCliExitError(`${what} failed (exit ${r.exitCode})${detail ? `: ${detail}` : ''}`);
     }
     return r;
   }
@@ -63,14 +68,24 @@ export class Remote {
     }
   }
 
-  /** Returns the file written; WP-CLI writes plain SQL, the agent gzipped SQL. */
-  async dbDump(destBase: string): Promise<DbSnapshot> {
+  /**
+   * Returns the file written; WP-CLI writes plain SQL, the agent gzipped SQL. When `wp db export` fails (e.g.
+   * the mysql client cannot connect the way PHP does), the agent's native dump is used instead.
+   */
+  async dbDump(destBase: string, onFallback?: (reason: string) => void): Promise<DbSnapshot> {
     if (this.wpCli) {
       const path = `${destBase}.sql`;
       const partial = `${path}.partial`;
-      await this.wp(['db', 'export', absPath(this.caps, partial)], 'wp db export');
-      await this.c.rename(partial, path);
-      return { path, method: 'wpcli' };
+      try {
+        await this.wp(['db', 'export', absPath(this.caps, partial)], 'wp db export');
+        await this.c.rename(partial, path);
+        return { path, method: 'wpcli' };
+      } catch (e) {
+        // Only a clean non-zero exit falls back: after a timeout the export may still be running remotely.
+        if (!(e instanceof WpCliExitError)) throw e;
+        await this.c.remove(partial).catch(() => undefined);
+        onFallback?.(e.message);
+      }
     }
     const path = `${destBase}.sql.gz`;
     const partial = `${path}.partial`;

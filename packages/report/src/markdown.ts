@@ -70,9 +70,7 @@ function renderItem(item: ItemView): string {
   const lines = [`**Version:** ${mdText(item.change)}`, ''];
   if (item.rows.length === 0) {
     lines.push(
-      item.errors.length > 0
-        ? 'Vulnerability data is incomplete (see lookup errors).'
-        : 'No known vulnerabilities.',
+      item.incomplete ? 'Vulnerability data is incomplete (see lookup errors).' : 'No known vulnerabilities.',
     );
   } else {
     lines.push(
@@ -84,7 +82,13 @@ function renderItem(item: ItemView): string {
           mdText(r.cvss),
           mdText(r.affected),
           mdText(r.fixedIn),
-          r.stillAffectingNew ? '⚠ no' : r.fixedByUpdate ? 'yes' : 'no',
+          r.stillAffectingNew
+            ? '⚠ no'
+            : r.fixUnknown
+              ? 'unknown (lookup failed)'
+              : r.fixedByUpdate
+                ? 'yes'
+                : 'no',
         ]),
       ),
     );

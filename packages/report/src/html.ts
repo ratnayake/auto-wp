@@ -58,7 +58,9 @@ function vulnTable(rows: VulnRowView[]): string {
       text(r.cvss),
       text(r.affected),
       text(r.fixedIn),
-      r.stillAffectingNew ? cell(`<span class="warn">⚠ no</span>`) : cell(r.fixedByUpdate ? 'yes' : 'no'),
+      r.stillAffectingNew
+        ? cell(`<span class="warn">⚠ no</span>`)
+        : cell(r.fixUnknown ? 'unknown (lookup failed)' : r.fixedByUpdate ? 'yes' : 'no'),
     ]),
   );
 }
@@ -69,7 +71,7 @@ function itemHtml(item: ItemView): string {
     parts.push(vulnTable(item.rows));
   } else {
     parts.push(
-      item.errors.length > 0
+      item.incomplete
         ? '<p class="warn">Vulnerability data is incomplete (see lookup errors).</p>'
         : '<p>No known vulnerabilities.</p>',
     );
