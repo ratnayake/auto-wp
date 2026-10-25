@@ -1,25 +1,21 @@
 import { posix } from 'node:path';
-import type {
-  Clock,
-  ComparisonResult,
-  HealthChecker,
-  ItemOutcome,
-  ItemResult,
-  Logger,
-  SiteConfig,
-  UpdateItem,
-  UpdaterOptions,
+import {
+  type Clock,
+  type ComparisonResult,
+  type HealthChecker,
+  type HealthSnapshot,
+  ITEM_SNAPSHOT_DIR,
+  type ItemOutcome,
+  type ItemResult,
+  type Logger,
+  type SiteConfig,
+  type UpdateItem,
+  type UpdaterOptions,
 } from '@auto-wp/contracts';
 import type { NeedsDbSnapshot } from './db-snapshot-policy.js';
 import { assertSafeItem, itemSnapshotBase } from './paths.js';
 import type { DbSnapshot, Remote } from './remote.js';
 import { msg } from './util.js';
-
-/**
- * Site object handed to `HealthChecker.quick` while maintenance mode is on. `bypassCookie` carries the
- * maintenance bypass token so the checker can reach the real site (package-local extension of SiteConfig).
- */
-export type SiteWithBypass = SiteConfig & { bypassCookie: string };
 
 export interface ItemContext {
   site: SiteConfig;
@@ -33,6 +29,12 @@ export interface ItemContext {
   clock: Clock;
   token: () => string;
   needsDb: NeedsDbSnapshot;
+  sleep: (ms: number) => Promise<void>;
+  /**
+   * Post-rollback health checks: tries and the pause between them. After a rollback, PHP opcache can keep
+   * serving the broken code for a couple of seconds (`opcache.revalidate_freq`), so one failure is not final.
+   */
+  rollbackHealth: { attempts: number; delayMs: number };
 }
 
 export interface ItemRunResult {
@@ -73,7 +75,7 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
 
   const { remote } = ctx;
   const c = remote.c;
-  const itemsDir = `${ctx.runDir}/items`;
+  const itemsDir = `${ctx.runDir}/${ITEM_SNAPSHOT_DIR}`;
   const base = `${itemsDir}/${itemSnapshotBase(item)}`;
   const archive = `${base}.tar.gz`;
   const wantDb = ctx.needsDb(item, ctx.dbSizeMb, ctx.opts.policy);
@@ -115,12 +117,10 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
   }
 
   const token = ctx.token();
-  const site: SiteWithBypass = { ...ctx.site, bypassCookie: token };
   let outcome: Partial_;
   try {
     outcome = await updateAndCheck(
       ctx,
-      site,
       item,
       targets,
       { archive, base, wantDb, created },
@@ -152,7 +152,6 @@ export async function runItem(ctx: ItemContext, item: UpdateItem): Promise<ItemR
 
 async function updateAndCheck(
   ctx: ItemContext,
-  site: SiteWithBypass,
   item: UpdateItem,
   targets: Targets,
   snap: { archive: string; base: string; wantDb: boolean; created: string[] },
@@ -163,6 +162,10 @@ async function updateAndCheck(
   const { archive } = snap;
   const { remote, logger } = ctx;
   const key = `${item.type}:${item.slug}`;
+
+  // Log fatals are judged per item: lines an earlier item (e.g. a rolled-back failure) wrote must not fail
+  // this one, so the log offsets are taken now, before anything of this item changes.
+  const itemBaseline = await withCurrentLogOffsets(ctx, ctx.opts.baseline);
 
   // 3. Maintenance on. If this fails nothing was updated; the caller still switches it off.
   try {
@@ -180,7 +183,10 @@ async function updateAndCheck(
       dbSnap = await existingDbSnapshot(remote.c, snap.base);
       if (dbSnap) ops.push(`snapshot db: reusing ${dbSnap.path}`);
       else {
-        dbSnap = await remote.dbDump(snap.base);
+        dbSnap = await remote.dbDump(snap.base, (reason) => {
+          ops.push('snapshot db: wp db export failed, using the agent dump');
+          logger.warn({ item: key, error: reason }, 'wp db export failed; falling back to agent db.dump');
+        });
         snap.created.push(dbSnap.path);
         ops.push(`snapshot db -> ${dbSnap.path}`);
       }
@@ -209,7 +215,7 @@ async function updateAndCheck(
   if (!failure) {
     await flushCache(ctx, ops, '');
     try {
-      health = await ctx.health.quick(site, remote.c, ctx.opts.baseline);
+      health = await ctx.health.quick(ctx.site, remote.c, itemBaseline, { bypassToken: token });
       ops.push(`health quick: ${health.ok ? 'ok' : 'FAILED'}`);
       if (!health.ok) failure = 'health check failed after update';
     } catch (e) {
@@ -220,7 +226,7 @@ async function updateAndCheck(
 
   // 7. Rollback.
   logger.warn({ item: key, error: failure }, 'update failed; rolling back');
-  const rb = await rollback(ctx, site, item, targets, archive, dbSnap, ops);
+  const rb = await rollback(ctx, token, item, targets, archive, dbSnap, ops);
   const outcome: ItemOutcome = rb.recovered ? 'failed-rolled-back' : 'failed-rollback-failed';
   if (rb.recovered) logger.warn({ item: key }, 'rollback succeeded');
   else logger.error({ item: key, error: rb.error }, 'ROLLBACK FAILED: site needs a restore');
@@ -241,7 +247,7 @@ interface RollbackResult {
 
 async function rollback(
   ctx: ItemContext,
-  site: SiteWithBypass,
+  token: string,
   item: UpdateItem,
   targets: Targets,
   archive: string,
@@ -274,27 +280,56 @@ async function rollback(
   } catch (e) {
     ops.push(`rollback: version check failed: ${msg(e)}`);
   }
-  try {
-    const health = await ctx.health.quick(site, c, ctx.opts.baseline);
-    ops.push(`rollback: health quick: ${health.ok ? 'ok' : 'FAILED'}`);
-    if (!health.ok)
-      return {
-        recovered: false,
-        health,
-        installedVersion,
-        error: 'health check still failing after rollback',
-      };
-    if (installedVersion !== item.currentVersion)
-      return {
-        recovered: false,
-        health,
-        installedVersion,
-        error: `installed version after rollback is ${installedVersion ?? 'unknown'}, expected ${item.currentVersion}`,
-      };
-    return { recovered: true, health, installedVersion };
-  } catch (e) {
-    return { recovered: false, installedVersion, error: `health check error after rollback: ${msg(e)}` };
+  const { attempts, delayMs } = ctx.rollbackHealth;
+  let health: ComparisonResult | undefined;
+  let healthError: string | undefined;
+  for (let attempt = 1; attempt <= Math.max(1, attempts); attempt++) {
+    if (attempt > 1) await ctx.sleep(delayMs);
+    try {
+      // Judge the rolled-back site by what it logs from now on: the fatals the failed update wrote (and any
+      // a previous attempt provoked) are already in the logs and must not fail this check.
+      const baseline = await withCurrentLogOffsets(ctx, ctx.opts.baseline);
+      health = await ctx.health.quick(ctx.site, c, baseline, { bypassToken: token });
+      healthError = undefined;
+    } catch (e) {
+      health = undefined;
+      healthError = msg(e);
+    }
+    const label = healthError ? `error: ${healthError}` : health?.ok ? 'ok' : 'FAILED';
+    ops.push(`rollback: health quick${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${label}`);
+    if (health?.ok) break;
   }
+  if (!health)
+    return { recovered: false, installedVersion, error: `health check error after rollback: ${healthError}` };
+  if (!health.ok)
+    return {
+      recovered: false,
+      health,
+      installedVersion,
+      error: 'health check still failing after rollback',
+    };
+  if (installedVersion !== item.currentVersion)
+    return {
+      recovered: false,
+      health,
+      installedVersion,
+      error: `installed version after rollback is ${installedVersion ?? 'unknown'}, expected ${item.currentVersion}`,
+    };
+  return { recovered: true, health, installedVersion };
+}
+
+/** The baseline with each log's offset moved to its current size (unreadable logs keep their offset). */
+async function withCurrentLogOffsets(ctx: ItemContext, baseline: HealthSnapshot): Promise<HealthSnapshot> {
+  const paths = [...new Set([...Object.keys(baseline.logOffsets), ...ctx.site.logFiles])];
+  const logOffsets: Record<string, number> = { ...baseline.logOffsets };
+  for (const path of paths) {
+    try {
+      logOffsets[path] = (await ctx.remote.c.call('logs.tail', { path, fromOffset: 0, maxBytes: 1 })).size;
+    } catch (e) {
+      if (/not.?found|ENOENT|no such file/i.test(msg(e))) logOffsets[path] = 0;
+    }
+  }
+  return { ...baseline, logOffsets };
 }
 
 async function flushCache(ctx: ItemContext, ops: string[], prefix: string): Promise<void> {
@@ -307,24 +342,31 @@ async function flushCache(ctx: ItemContext, ops: string[], prefix: string): Prom
   }
 }
 
+/**
+ * WP-CLI argv for the update. Core pins `--version` (always a wordpress.org release). Plugins and themes do
+ * not: `--version` makes WP-CLI download that version from wordpress.org, which fails for premium and
+ * privately hosted packages; without it WP-CLI installs the package WordPress offered, and the installed
+ * version is verified against `newVersion` afterwards.
+ */
+function wpCliUpdate(item: UpdateItem): string[][] {
+  if (item.type === 'core')
+    return [
+      ['core', 'update', `--version=${item.newVersion}`],
+      ['core', 'update-db'],
+    ];
+  return [[item.type, 'update', item.slug]];
+}
+
 async function applyUpdate(remote: Remote, item: UpdateItem): Promise<void> {
-  const v = `--version=${item.newVersion}`;
   if (remote.wpCli) {
-    if (item.type === 'core') {
-      await remote.wp(['core', 'update', v], 'wp core update');
-      await remote.wp(['core', 'update-db'], 'wp core update-db');
-    } else await remote.wp([item.type, 'update', item.slug, v], `wp ${item.type} update`);
+    for (const args of wpCliUpdate(item)) await remote.wp(args, `wp ${args.slice(0, 2).join(' ')}`);
     return;
   }
   await remote.c.call('wp.upgrade', { type: item.type, slug: item.slug, version: item.newVersion });
 }
 
 function describeUpdate(remote: Remote, item: UpdateItem): string[] {
-  const v = `--version=${item.newVersion}`;
-  if (remote.wpCli)
-    return item.type === 'core'
-      ? [`wp core update ${v}`, 'wp core update-db']
-      : [`wp ${item.type} update ${item.slug} ${v}`];
+  if (remote.wpCli) return wpCliUpdate(item).map((a) => `wp ${a.join(' ')}`);
   return [`wp.upgrade ${item.type} ${item.slug} ${item.newVersion}`];
 }
 

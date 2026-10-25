@@ -63,14 +63,22 @@ export class Remote {
     }
   }
 
-  /** Returns the file written; WP-CLI writes plain SQL, the agent gzipped SQL. */
-  async dbDump(destBase: string): Promise<DbSnapshot> {
+  /**
+   * Returns the file written; WP-CLI writes plain SQL, the agent gzipped SQL. When `wp db export` fails (e.g.
+   * the mysql client cannot connect the way PHP does), the agent's native dump is used instead.
+   */
+  async dbDump(destBase: string, onFallback?: (reason: string) => void): Promise<DbSnapshot> {
     if (this.wpCli) {
       const path = `${destBase}.sql`;
       const partial = `${path}.partial`;
-      await this.wp(['db', 'export', absPath(this.caps, partial)], 'wp db export');
-      await this.c.rename(partial, path);
-      return { path, method: 'wpcli' };
+      try {
+        await this.wp(['db', 'export', absPath(this.caps, partial)], 'wp db export');
+        await this.c.rename(partial, path);
+        return { path, method: 'wpcli' };
+      } catch (e) {
+        await this.c.remove(partial).catch(() => undefined);
+        onFallback?.(e instanceof Error ? e.message : String(e));
+      }
     }
     const path = `${destBase}.sql.gz`;
     const partial = `${path}.partial`;

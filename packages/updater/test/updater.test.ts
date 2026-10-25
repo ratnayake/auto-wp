@@ -12,9 +12,19 @@ function setup(o: { shell?: boolean; health?: FakeHealth } = {}) {
   const runs = new InMemoryRunStore();
   const logger = new MemoryLogger();
   const clock = new FakeClock();
-  const updater = new DefaultUpdater({ health, runs, logger, clock, randomToken: () => TOKEN });
+  const sleeps: number[] = [];
+  const updater = new DefaultUpdater({
+    health,
+    runs,
+    logger,
+    clock,
+    randomToken: () => TOKEN,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
   const opts = { runId: 'run1', baseline, policy: policy() };
-  return { conn, state, health, runs, logger, clock, updater, opts };
+  return { conn, state, health, runs, logger, clock, updater, opts, sleeps };
 }
 
 const foo = item('plugin', 'foo', '1.0.0', '1.1.0');
@@ -32,7 +42,9 @@ describe('DefaultUpdater', () => {
     expect(res[0]?.installedVersion).toBe('1.1.0');
     expect(t.state.versions.get('plugin:bar')).toBe('2.1.0');
 
-    const seq = t.conn.ops.map((o) => o.op).filter((o) => o.startsWith('call:'));
+    const seq = t.conn.ops
+      .map((o) => o.op)
+      .filter((o) => o.startsWith('call:') && o !== 'call:logs.tail');
     expect(seq.slice(0, 9)).toEqual([
       'call:lock.acquire',
       'call:fs.archive',
@@ -52,7 +64,7 @@ describe('DefaultUpdater', () => {
     });
     expect(t.conn.files.has(t.conn.resolve('auto-wp-backup/run1/items/plugin-foo-1.0.0.tar.gz'))).toBe(true);
     expect(callOps(t.conn, 'wp.maintenance')[0]?.args).toEqual({ enabled: true, bypassToken: TOKEN });
-    expect(t.health.calls).toEqual([{ bypassCookie: TOKEN }, { bypassCookie: TOKEN }]);
+    expect(t.health.calls).toEqual([{ bypassToken: TOKEN }, { bypassToken: TOKEN }]);
 
     const rec = await t.runs.get('run1');
     expect(rec?.status).toBe('done');
@@ -98,9 +110,10 @@ describe('DefaultUpdater', () => {
   });
 
   it('rollback fails → failed-rollback-failed, needs-restore, stops', async () => {
-    const t = setup({ health: new FakeHealth([BAD, BAD]) });
+    const t = setup({ health: new FakeHealth([BAD, BAD, BAD, BAD]) });
     const res = await collect(t.updater.apply(site, t.conn, [foo, bar], t.opts));
     expect(res.map((r) => r.outcome)).toEqual(['failed-rollback-failed', 'skipped']);
+    expect(t.sleeps).toEqual([2000, 2000]);
     expect(callOps(t.conn, 'wp.upgrade')).toHaveLength(1);
     const rec = await t.runs.get('run1');
     expect(rec?.status).toBe('needs-restore');
@@ -111,6 +124,50 @@ describe('DefaultUpdater', () => {
     await expect(collect(t.updater.apply(site, t.conn, [foo, bar], t.opts))).rejects.toThrow(
       /needs a restore/,
     );
+  });
+
+  it('log fatals are judged per item and again after a rollback (log offsets re-baselined)', async () => {
+    const t = setup({ health: new FakeHealth([BAD, OK]) });
+    let size = 100;
+    t.conn.onCall('logs.tail', (p) => {
+      if (p.path === 'error_log') throw new Error('log file not found');
+      size += 400; // every read sees a log that grew
+      return { data: '', nextOffset: 0, size, rotated: false };
+    });
+    const res = await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    expect(res[0]?.outcome).toBe('failed-rolled-back');
+    // Item start (before the update), then after the rollback: each sees the log as it was at that moment.
+    expect(t.health.baselines[0]?.logOffsets).toEqual({ 'wp-content/debug.log': 500, error_log: 0 });
+    expect(t.health.baselines[1]?.logOffsets).toEqual({ 'wp-content/debug.log': 900, error_log: 0 });
+  });
+
+  it('falls back to the agent db.dump when wp db export fails', async () => {
+    const t = setup({ shell: true, health: new FakeHealth([BAD, OK]) });
+    t.conn.onExec(
+      (argv) => argv[0] === 'wp' && argv[1] === 'db' && argv[2] === 'export',
+      () => ({ exitCode: 1, stdout: '', stderr: 'TLS/SSL error', durationMs: 0 }),
+    );
+    const res = await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    expect(res[0]?.outcome).toBe('failed-rolled-back');
+    expect(res[0]?.operations).toContain('snapshot db: wp db export failed, using the agent dump');
+    expect(callOps(t.conn, 'db.dump')).toHaveLength(1);
+    expect(callOps(t.conn, 'db.import')).toHaveLength(1);
+  });
+
+  it('post-rollback health is retried (opcache can serve the broken code for ~2 s)', async () => {
+    const t = setup({ health: new FakeHealth([BAD, BAD, new Error('connection reset'), OK]) });
+    const res = await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    expect(res[0]?.outcome).toBe('failed-rolled-back');
+    expect(t.sleeps).toEqual([2000, 2000]);
+    expect(t.health.calls).toHaveLength(4);
+    expect(res[0]?.operations).toEqual(
+      expect.arrayContaining([
+        'rollback: health quick: FAILED',
+        'rollback: health quick (attempt 2): error: connection reset',
+        'rollback: health quick (attempt 3): ok',
+      ]),
+    );
+    expect(t.state.versions.get('plugin:foo')).toBe('1.0.0');
   });
 
   it('rollback extract failure → needs-restore', async () => {
@@ -131,7 +188,14 @@ describe('DefaultUpdater', () => {
   });
 
   it('health checker throwing still turns maintenance off', async () => {
-    const t = setup({ health: new FakeHealth([new Error('playwright crashed'), new Error('again')]) });
+    const t = setup({
+      health: new FakeHealth([
+        new Error('playwright crashed'),
+        new Error('again'),
+        new Error('again'),
+        new Error('again'),
+      ]),
+    });
     const res = await collect(t.updater.apply(site, t.conn, [foo], t.opts));
     expect(res[0]?.outcome).toBe('failed-rollback-failed');
     expect(maintenanceCalls(t.conn)).toEqual([true, false]);
@@ -326,7 +390,7 @@ describe('DefaultUpdater', () => {
     const argvs = t.conn.ops
       .filter((o) => o.op === 'exec')
       .map((o) => (o.args as { argv: string[] }).argv.filter((a) => !a.startsWith('--path=')).join(' '));
-    expect(argvs).toContain('wp plugin update foo --version=1.1.0');
+    expect(argvs).toContain('wp plugin update foo');
     expect(argvs).toContain('wp core update --version=6.5.1');
     expect(argvs).toContain('wp core update-db');
     expect(
