@@ -1,0 +1,90 @@
+{
+  "e2e00000-0000-4000-8000-000000000001": {
+    "id": "e2e00000-0000-4000-8000-000000000001",
+    "title": "Contact Form 7 <= 5.8.3 - Stored Cross-Site Scripting",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "Contact Form 7",
+        "slug": "contact-form-7",
+        "affected_versions": {
+          "* - 5.8.3": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "5.8.3",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["5.8.4"],
+        "remediation": "Update to version 5.8.4, or a newer patched version"
+      }
+    ],
+    "description": "E2E fixture vulnerability.",
+    "references": ["https://example.test/advisory/cf7"],
+    "cwe": { "id": 79, "name": "Cross-site Scripting", "description": "E2E" },
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N", "score": 6.4, "rating": "Medium" },
+    "cve": "CVE-2099-0001",
+    "cve_link": "https://www.cve.org/CVERecord?id=CVE-2099-0001",
+    "published": "2024-01-10 00:00:00",
+    "updated": "2024-01-10 00:00:00"
+  },
+  "e2e00000-0000-4000-8000-000000000002": {
+    "id": "e2e00000-0000-4000-8000-000000000002",
+    "title": "Twenty Twenty-Four < 1.1 - Reflected Cross-Site Scripting",
+    "software": [
+      {
+        "type": "theme",
+        "name": "Twenty Twenty-Four",
+        "slug": "twentytwentyfour",
+        "affected_versions": {
+          "* - 1.0": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "1.0",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["1.1"],
+        "remediation": "Update to version 1.1, or a newer patched version"
+      }
+    ],
+    "description": "E2E fixture vulnerability.",
+    "references": ["https://example.test/advisory/tt4"],
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", "score": 6.1, "rating": "Medium" },
+    "cve": "CVE-2099-0002",
+    "cve_link": "https://www.cve.org/CVERecord?id=CVE-2099-0002",
+    "published": "2024-02-01 00:00:00",
+    "updated": "2024-02-01 00:00:00"
+  },
+  "e2e00000-0000-4000-8000-000000000003": {
+    "id": "e2e00000-0000-4000-8000-000000000003",
+    "title": "WordPress Core < 6.5.5 - Authenticated Stored XSS",
+    "software": [
+      {
+        "type": "core",
+        "name": "WordPress",
+        "slug": "wordpress",
+        "affected_versions": {
+          "* - 6.5.4": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "6.5.4",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": ["6.5.5"],
+        "remediation": "Update to version 6.5.5, or a newer patched version"
+      }
+    ],
+    "description": "E2E fixture vulnerability.",
+    "references": ["https://example.test/advisory/core"],
+    "cvss": { "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N", "score": 5.4, "rating": "Medium" },
+    "cve": "CVE-2099-0003",
+    "cve_link": "https://www.cve.org/CVERecord?id=CVE-2099-0003",
+    "published": "2024-06-24 00:00:00",
+    "updated": "2024-06-24 00:00:00"
+  }
+}

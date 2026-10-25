@@ -1,0 +1,4 @@
+.tmp
+tests
+node_modules
+fixtures
