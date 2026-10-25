@@ -4,13 +4,17 @@ import { join, posix } from 'node:path';
 import type { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import {
-  BACKUP_DIR_NAME,
   type BackupManifest,
   BackupManifestSchema,
   type BackupVerifier,
+  backupRunDir,
   type Check,
   type Clock,
+  DB_ARTIFACT,
+  FILES_ARTIFACT,
   type Logger,
+  MANIFEST_FILE,
+  MANIFEST_SIG_FILE,
   type SiteConfig,
   type SiteConnection,
   type VerificationResult,
@@ -29,10 +33,9 @@ import {
   withinTolerance,
 } from './util.js';
 
-export const MANIFEST_NAME = 'manifest.json';
-export const MANIFEST_SIG_NAME = 'manifest.json.sig';
-export const DB_ARTIFACT = 'db.sql.gz';
-export const FILES_ARTIFACT = 'files.tar.gz';
+/** Layout names from contracts `backup-layout.ts`. */
+const MANIFEST_NAME = MANIFEST_FILE;
+const MANIFEST_SIG_NAME = MANIFEST_SIG_FILE;
 
 export interface ManifestSignatureVerifier {
   /** Resolve true when `signature` is a valid signature over the exact `manifest` bytes. */
@@ -219,10 +222,8 @@ export class DefaultBackupVerifier implements BackupVerifier {
       this.deps.logger.warn({ err: errMsg(e) }, 'probe failed; cannot locate remote backup');
       return undefined;
     }
-    const inDocroot = posix.join(caps.wpRoot, BACKUP_DIR_NAME, id);
-    const outside = caps.outsideDocrootDir
-      ? posix.join(caps.outsideDocrootDir, BACKUP_DIR_NAME, id)
-      : undefined;
+    const inDocroot = backupRunDir(caps.wpRoot, id);
+    const outside = caps.outsideDocrootDir ? backupRunDir(caps.outsideDocrootDir, id) : undefined;
     const order = site.backupLocation === 'outside' ? [outside, inDocroot] : [inDocroot, outside];
     for (const dir of order) {
       if (!dir) continue;

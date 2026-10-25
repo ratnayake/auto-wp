@@ -51,8 +51,9 @@ describe('create: strategies', () => {
     expect(m.wp.core).toBe('6.8.1');
   });
 
-  it('tar argv has all excludes and uses -C wpRoot', async () => {
+  it('tar argv has all excludes, uses -C wpRoot and names top-level entries (no ./ prefix)', async () => {
     const c = makeConn();
+    c.seed({ 'wp-config.php': '<?php', 'auto-wp-backup/.htaccess': 'deny' });
     const { svc } = await makeService();
     await svc.create(makeSite(), c, { pull: false });
     const tar = execArgvs(c).find((a) => a[0] === '/bin/tar') as string[];
@@ -65,7 +66,12 @@ describe('create: strategies', () => {
       'wp-content/uploads/backup*',
     ])
       expect(tar).toContain(`--exclude=${e}`);
-    expect(tar.slice(-3)).toEqual(['-C', '/var/www/html', '.']);
+    const at = tar.indexOf('-C');
+    expect(tar.slice(at, at + 3)).toEqual(['-C', '/var/www/html', '--']);
+    const names = tar.slice(at + 3);
+    expect(names).toEqual(expect.arrayContaining(['wp-config.php', 'wp-includes']));
+    expect(names).not.toContain('.');
+    expect(names).not.toContain('auto-wp-backup');
   });
 
   it('mysqldump: 0600 options file, deleted, password never in argv/env', async () => {

@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
+import { DUMP_TERMINATOR_PREFIX } from '@auto-wp/contracts';
 
 export interface SqlScanResult {
   /** Names of tables created by `CREATE TABLE`, in order of appearance, de-duplicated. */
@@ -44,7 +45,8 @@ interface Tok {
 const MAX_WORD = 64;
 const MAX_IDENT = 1024;
 const MAX_HEAD = 24;
-const TERMINATOR_PREFIX = 'dump completed';
+/** Comment body of the contracts terminator (`-- Dump completed`), compared case-insensitively. */
+const TERMINATOR_PREFIX = DUMP_TERMINATOR_PREFIX.replace(/^--\s*/, '').toLowerCase();
 const SQ_RE = /['\\]/g;
 const DQ_RE = /["\\]/g;
 const BT_RE = /`/g;
