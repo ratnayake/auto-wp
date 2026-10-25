@@ -233,6 +233,10 @@ export async function makeHarness(
       logger,
       agentPhpSource: async () => o.agentSource ?? Buffer.from('<?php // agent'),
       sshAgentSocket: '/tmp/agent.sock',
+      // never hit the network from unit tests; tests that exercise the bootstrap pass their own fetcher
+      fetcher: async () => {
+        throw new Error('offline');
+      },
       createClient: () => client as unknown as Client,
       sleep: async (ms) => {
         sleeps.push(ms);
