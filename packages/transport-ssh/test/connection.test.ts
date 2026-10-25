@@ -221,7 +221,7 @@ describe('call', () => {
     const r = await h.conn.call('fs.sha256', { path: 'x' });
     expect(r).toEqual({ sha256: 'abc', bytes: 3 });
     expect(seen[0]).toBe(
-      `echo "AUTOWP_PID=$$" >&2; cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256'`,
+      `echo "AUTOWP_PID=$$" >&2; cd '/home/u/public_html' && exec 'php' '${AGENT}' '--cli' 'fs.sha256' '--wp-root' '/home/u/public_html'`,
     );
     expect(JSON.parse(seen[1] ?? '')).toEqual({ path: 'x' });
     expect(h.sftp.files.get(AGENT)?.toString()).toBe('<?php // agent');

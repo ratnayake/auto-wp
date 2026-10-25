@@ -440,7 +440,9 @@ export class SshSiteConnection implements SiteConnection {
     const p = actionSchemas[action].params.safeParse(params);
     if (!p.success) throw new AgentError('invalid_params', `invalid ${action} params: ${p.error.message}`);
     const { agentPath } = await this.ensureTools();
-    const r = await this.exec([this.config.phpBinary, agentPath, '--cli', action], {
+    // The agent has no config of its own over SSH: tell it which WordPress root to work on.
+    const argv = [this.config.phpBinary, agentPath, '--cli', action, '--wp-root', this.config.wpRoot];
+    const r = await this.exec(argv, {
       stdin: JSON.stringify(p.data),
       timeoutMs: timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
     });
