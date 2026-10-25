@@ -31,7 +31,7 @@ Design details are in [ADR-001](ADR-001-architecture.md). The agent wire format 
 On the machine that runs auto-wp (VPS or local):
 - Node.js 24 or newer (`engines.node` is `>=24`).
 - pnpm 11 (`packageManager` is `pnpm@11.20.0`).
-- Docker, only for the local end-to-end harness in section 4. TODO(verify): whether `backup_verify` with `deep=true` also needs Docker (the verifier is wired with a Docker runner).
+- Docker, for the local end-to-end harness in section 4 and on the controller for `backup_verify` with `deep=true` (the restore drill runs in a throwaway MariaDB container; without Docker the deep check is skipped with a warning).
 - `ssh`, `ssh-keygen` and `ssh-keyscan` for the SSH setup.
 
 On each WordPress site, one of:
@@ -162,7 +162,7 @@ A `secret:<name>` value is a reference, never the secret. The name matches `[a-z
 2. The encrypted file `<dataDir>/secrets.enc` (libsodium), used when a key is supplied in `AUTOWP_SECRETS_KEY` (base64, 32 bytes), `AUTOWP_SECRETS_KEY_FILE`, or the systemd credential `autowp-secrets-key`.
 3. The OS keychain, when no such key is set.
 
-There is no command-line tool to write into the encrypted file or the keychain. `SecretStore.set()` exists in the `@auto-wp/config` API only. TODO(verify): confirm no secret CLI has been added since this guide was written. The simplest supported route is the environment variable, loaded from a mode-0600 file (see section 7). Never put the secret value on a command line.
+There is no command-line tool to write into the encrypted file or the keychain. `SecretStore.set()` exists in the `@auto-wp/config` API only. The simplest supported route is the environment variable, loaded from a mode-0600 file (see section 7). Never put the secret value on a command line.
 
 ## 6. Connect a site
 
