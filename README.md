@@ -1,7 +1,6 @@
 # auto-wp
 
 An MCP server that maintains WordPress sites on shared hosting. It:
-
 1. backs up the database and files into `<site root>/auto-wp-backup/<id>/` (and off-site),
 2. validates the backup,
 3. detects pending core, theme and plugin updates,
@@ -13,19 +12,19 @@ The controller runs **outside WordPress** (see [ADR-001](docs/ADR-001-architectu
 
 ## Layout
 
-| Path | Purpose |
-|---|---|
-| `packages/contracts` | Shared types, zod schemas, service interfaces, test fakes, protocol test vectors |
-| `packages/config` | Site registry and secrets |
-| `packages/safety` | Audit log, policy, approval gate, locks |
-| `packages/transport-ssh`, `packages/transport-agent` | `SiteConnection` implementations |
-| `packages/backup`, `packages/verify` | Backup creation and validation |
-| `packages/inventory`, `packages/vulndb` | Update detection/planning and vulnerability intelligence |
-| `packages/updater`, `packages/health` | Update execution with rollback and restore; health checks and comparison |
-| `packages/report` | Report rendering |
-| `agent-php/` | Standalone PHP agent |
-| `apps/mcp-server` | The MCP server (stdio and Streamable HTTP) |
-| `e2e/` | Docker-based end-to-end harness |
+| Path                                                 | Purpose                                                                          |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `packages/contracts`                                 | Shared types, zod schemas, service interfaces, test fakes, protocol test vectors |
+| `packages/config`                                    | Site registry and secrets                                                        |
+| `packages/safety`                                    | Audit log, policy, approval gate, locks                                          |
+| `packages/transport-ssh`, `packages/transport-agent` | `SiteConnection` implementations                                                 |
+| `packages/backup`, `packages/verify`                 | Backup creation and validation                                                   |
+| `packages/inventory`, `packages/vulndb`              | Update detection/planning and vulnerability intelligence                         |
+| `packages/updater`, `packages/health`                | Update execution with rollback and restore; health checks and comparison         |
+| `packages/report`                                    | Report rendering                                                                 |
+| `agent-php/`                                         | Standalone PHP agent                                                             |
+| `apps/mcp-server`                                    | The MCP server (stdio and Streamable HTTP)                                       |
+| `e2e/`                                               | Docker-based end-to-end harness                                                  |
 
 ## Development
 

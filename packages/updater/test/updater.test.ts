@@ -42,9 +42,7 @@ describe('DefaultUpdater', () => {
     expect(res[0]?.installedVersion).toBe('1.1.0');
     expect(t.state.versions.get('plugin:bar')).toBe('2.1.0');
 
-    const seq = t.conn.ops
-      .map((o) => o.op)
-      .filter((o) => o.startsWith('call:') && o !== 'call:logs.tail');
+    const seq = t.conn.ops.map((o) => o.op).filter((o) => o.startsWith('call:') && o !== 'call:logs.tail');
     expect(seq.slice(0, 9)).toEqual([
       'call:lock.acquire',
       'call:fs.archive',
