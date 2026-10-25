@@ -273,6 +273,9 @@ function fileRules(
     else if (!p.includes('/')) keep.add(p);
     else carry.add(p);
   }
+  // Paths under a top-level entry that is never moved (e.g. the agent's own `auto-wp-agent/.data`) stay in
+  // place, so there is nothing to carry over; the agent also refuses fs.* calls on its own directory.
+  for (const p of [...carry]) if (keep.has(p.split('/')[0] ?? '')) carry.delete(p);
   return { keep, carry: [...carry].sort(), globs };
 }
 

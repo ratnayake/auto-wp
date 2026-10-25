@@ -256,7 +256,8 @@ export class RunManager {
         extras.verification = v;
         if (!v.ok) {
           run.status = 'needs-restore';
-          run.error = 'post-restore verification failed';
+          const bad = v.checks.filter((k) => !k.ok && k.severity === 'error').map((k) => k.name);
+          run.error = `post-restore verification failed: ${bad.join(', ') || 'unknown'}`;
         }
       },
       notify,
