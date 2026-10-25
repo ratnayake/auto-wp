@@ -558,7 +558,31 @@ export class SshSiteConnection implements SiteConnection {
     if ((await this.jail.isRootOrAncestor(lexical)) || (await this.jail.isRootOrAncestor(real))) {
       throw new PathJailError(`refusing to remove a jail root or one of its ancestors: ${path}`);
     }
-    await this.removeReal(await this.sftp(), real, o.recursive ?? false);
+    const sftp = await this.sftp();
+    if (o.recursive && (await this.removeTreeWithShell(sftp, real))) return;
+    await this.removeReal(sftp, real, o.recursive ?? false);
+  }
+
+  /**
+   * A tree removed one SFTP round trip per entry takes minutes for a WordPress-sized tree (e.g. a pruned
+   * backup holding a pre-restore copy of the site), so directories go through `rm -rf` (which never follows
+   * symlinks) on the already-jailed real path. Returns false to fall back to SFTP.
+   */
+  private async removeTreeWithShell(sftp: Sftp, real: string): Promise<boolean> {
+    const a = await sftp.lstat(real);
+    if (!a || toFileStat(real, a).type !== 'dir') return false;
+    try {
+      const r = await this.run(buildCommand(['rm', '-rf', '--', real]), undefined, 30 * 60_000);
+      if (r.exitCode !== 0) {
+        this.deps.logger.warn(
+          { siteId: this.siteId, err: r.stderr.slice(0, 200) },
+          'rm -rf failed; using SFTP',
+        );
+      }
+    } catch (e) {
+      this.deps.logger.warn({ siteId: this.siteId, err: String(e) }, 'rm -rf failed; using SFTP');
+    }
+    return (await sftp.lstat(real)) === null;
   }
 
   private async removeReal(sftp: Sftp, real: string, recursive: boolean): Promise<void> {
