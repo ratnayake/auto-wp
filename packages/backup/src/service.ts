@@ -18,12 +18,16 @@ import {
 import {
   BACKUP_EXCLUDES,
   BACKUP_ID_RE,
+  CANARY_FILE,
   DB_FILE,
   DISK_SAFETY_FACTOR,
   EST_BYTES_PER_ROW,
+  EXEC_TIMEOUT_MS,
+  FETCH_TIMEOUT_MS,
   FILES_FILE,
   HTACCESS,
   INDEX_PHP,
+  LOCK_TTL_SEC,
   MANIFEST_FILE,
   MYSQLDUMP_SCRIPT,
   SIG_FILE,
@@ -131,7 +135,7 @@ export class DefaultBackupService implements BackupService {
     }
 
     say('acquiring remote lock');
-    const lock = await conn.call('lock.acquire', { runId: id });
+    const lock = await conn.call('lock.acquire', { runId: id, ttlSec: LOCK_TTL_SEC });
     if (!lock.acquired) {
       throw new LockError(`another operation holds the remote lock (${lock.holder ?? 'unknown holder'})`);
     }
@@ -218,26 +222,46 @@ export class DefaultBackupService implements BackupService {
     let loc = first;
     for (;;) {
       const dir = posix.join(this.baseDir(caps, loc), id);
-      let manifest: BackupManifest;
       try {
-        manifest = await this.build(site, conn, caps, id, dir, ctx);
-        if (loc === 'outside') return { manifest, dir };
-        const exposed = await this.exposedUrls(site, id);
-        if (exposed.length === 0) return { manifest, dir };
-        this.deps.logger.warn({ siteId: site.id, exposed }, 'backup folder is publicly readable');
+        await this.prepare(conn, dir);
+        let problems: string[] = [];
+        if (loc === 'docroot') {
+          // probe with a harmless canary BEFORE any sensitive data is written
+          await conn.writeFile(posix.join(dir, CANARY_FILE), 'auto-wp protection canary\n', { mode: 0o644 });
+          problems = await this.exposedUrls(site, id, [CANARY_FILE]);
+        }
+        let manifest: BackupManifest | undefined;
+        if (problems.length === 0) {
+          manifest = await this.build(site, conn, caps, id, dir, ctx);
+          if (loc === 'docroot') problems = await this.exposedUrls(site, id, [MANIFEST_FILE, DB_FILE]);
+        }
+        if (manifest && problems.length === 0) {
+          await conn.remove(posix.join(dir, CANARY_FILE)).catch(() => {});
+          return { manifest, dir };
+        }
+        this.deps.logger.warn({ siteId: site.id, problems }, 'backup folder is not verifiably protected');
         await this.cleanup(conn, dir);
         if (!caps.outsideDocrootDir) {
           throw new ExposureError(
-            `backup files were publicly downloadable (HTTP 200: ${exposed.join(', ')}) and the server has no directory above the docroot to fall back to. The backup was deleted. Block ${BACKUP_DIR_NAME}/ in the web server config (e.g. nginx: location ^~ /${BACKUP_DIR_NAME}/ { deny all; }) and retry.`,
+            `backup folder could not be shown to be protected from the web (${problems.join('; ')}) and the server has no directory above the docroot to fall back to. Anything written was deleted. Block ${BACKUP_DIR_NAME}/ in the web server config (e.g. nginx: location ^~ /${BACKUP_DIR_NAME}/ { deny all; }) and retry.`,
           );
         }
-        ctx.say('docroot backup folder is exposed; retrying outside the docroot');
+        ctx.say('docroot backup folder is exposed or unverifiable; retrying outside the docroot');
         loc = 'outside';
       } catch (e) {
         await this.cleanup(conn, dir);
         throw e;
       }
     }
+  }
+
+  private async prepare(conn: SiteConnection, dir: string): Promise<void> {
+    const base = posix.dirname(dir);
+    await conn.mkdir(base, { recursive: true, mode: 0o755 });
+    await conn.writeFile(posix.join(base, '.htaccess'), HTACCESS, { mode: 0o644 });
+    await conn.writeFile(posix.join(base, 'index.php'), INDEX_PHP, { mode: 0o644 });
+    await conn.writeFile(posix.join(base, 'web.config'), WEB_CONFIG, { mode: 0o644 });
+    await conn.mkdir(dir, { recursive: true, mode: 0o700 });
   }
 
   private async cleanup(conn: SiteConnection, dir: string): Promise<void> {
@@ -256,13 +280,6 @@ export class DefaultBackupService implements BackupService {
     dir: string,
     ctx: RunCtx,
   ): Promise<BackupManifest> {
-    const base = posix.dirname(dir);
-    await conn.mkdir(base, { recursive: true, mode: 0o755 });
-    await conn.writeFile(posix.join(base, '.htaccess'), HTACCESS, { mode: 0o644 });
-    await conn.writeFile(posix.join(base, 'index.php'), INDEX_PHP, { mode: 0o644 });
-    await conn.writeFile(posix.join(base, 'web.config'), WEB_CONFIG, { mode: 0o644 });
-    await conn.mkdir(dir, { recursive: true, mode: 0o700 });
-
     ctx.say('dumping database');
     const dbMethod = await this.dumpDb(conn, caps, dir, id);
     ctx.say('archiving files');
@@ -389,7 +406,7 @@ export class DefaultBackupService implements BackupService {
   }
 
   private async sh(conn: SiteConnection, argv: string[], okCodes: number[] = [0]): Promise<void> {
-    const r = await conn.exec(argv, { timeoutMs: 3 * 3600_000 });
+    const r = await conn.exec(argv, { timeoutMs: EXEC_TIMEOUT_MS });
     if (!okCodes.includes(r.exitCode)) {
       throw new BackupError(
         `${posix.basename(argv[0] ?? 'command')} exited ${r.exitCode}: ${trunc(r.stderr)}`,
@@ -445,28 +462,45 @@ export class DefaultBackupService implements BackupService {
 
   // ---- protection check ------------------------------------------------------------------------
 
-  /** URLs that answered 2xx. 401/403/404 are the expected answers; network failures abort. */
-  private async exposedUrls(site: SiteConfig, id: string): Promise<string[]> {
+  /**
+   * Problems for each URL that is not proven protected: 2xx is exposed; 401/403/404 are fine; a 3xx is
+   * followed once on the same host and re-judged; anything else (5xx, timeout, network) fails closed.
+   */
+  private async exposedUrls(site: SiteConfig, id: string, names: string[]): Promise<string[]> {
     const root = site.url.replace(/\/+$/, '');
-    const exposed: string[] = [];
-    for (const name of [MANIFEST_FILE, DB_FILE]) {
+    const problems: string[] = [];
+    for (const name of names) {
       const url = `${root}/${BACKUP_DIR_NAME}/${id}/${name}`;
-      let status: number;
-      try {
-        const res = await this.deps.fetch(url, { method: 'GET', redirect: 'manual' });
-        status = res.status;
-        await res.body?.cancel().catch(() => {});
-      } catch (e) {
-        throw new ExposureError(
-          `could not verify that ${url} is protected (${(e as Error).message}); the backup was removed`,
-        );
-      }
-      if (status >= 200 && status < 300) exposed.push(url);
-      else if (![401, 403, 404].includes(status)) {
-        this.deps.logger.warn({ url, status }, 'unexpected status from backup protection check');
-      }
+      const verdict = await this.judge(url, true);
+      if (verdict !== 'ok') problems.push(`${url}: ${verdict}`);
     }
-    return exposed;
+    return problems;
+  }
+
+  private async judge(url: string, mayRedirect: boolean): Promise<string> {
+    let res: Response;
+    try {
+      res = await this.deps.fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (e) {
+      return `unverifiable (${(e as Error).name}: ${(e as Error).message})`;
+    }
+    await res.body?.cancel().catch(() => {});
+    const { status } = res;
+    if ([401, 403, 404].includes(status)) return 'ok';
+    if (status >= 200 && status < 300) return `publicly readable (HTTP ${status})`;
+    if (status >= 300 && status < 400 && mayRedirect) {
+      const loc = res.headers.get('location');
+      try {
+        const next = new URL(loc ?? '', url);
+        if (next.hostname === new URL(url).hostname) return this.judge(next.toString(), false);
+      } catch {}
+      return `unverifiable (redirect to ${loc ?? 'nowhere'})`;
+    }
+    return `unverifiable (HTTP ${status})`;
   }
 
   // ---- list / pull / prune ---------------------------------------------------------------------

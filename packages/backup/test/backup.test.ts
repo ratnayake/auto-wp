@@ -181,6 +181,7 @@ describe('create: manifest and protection', () => {
     await svc.create(makeSite(), c, { pull: false });
     const calls = (f as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
     expect(calls.map((x) => x[0])).toEqual([
+      `https://demo.test/auto-wp-backup/${ID}/canary.txt`,
       `https://demo.test/auto-wp-backup/${ID}/manifest.json`,
       `https://demo.test/auto-wp-backup/${ID}/db.sql.gz`,
     ]);
@@ -201,7 +202,9 @@ describe('create: manifest and protection', () => {
   it('HTTP 200 and no outside dir -> exposure error and cleanup', async () => {
     const c = makeConn({ outsideDocrootDir: undefined });
     const { svc } = await makeService({ fetch: statusFetch(200) });
-    await expect(svc.create(makeSite(), c, { pull: false })).rejects.toThrow(/publicly downloadable/);
+    await expect(svc.create(makeSite(), c, { pull: false })).rejects.toThrow(
+      /could not be shown to be protected/,
+    );
     expect([...c.files.keys()].filter((k) => k.includes(ID))).toEqual([]);
     expect(c.ops.filter((o) => o.op === 'call:lock.release')).toHaveLength(1);
   });
@@ -216,7 +219,66 @@ describe('create: manifest and protection', () => {
   });
 });
 
+describe('protection check', () => {
+  const run = async (f: typeof fetch, caps = {}) => {
+    const c = makeConn(caps);
+    const { svc } = await makeService({ fetch: f });
+    const m = await svc.create(makeSite(), c, { pull: false });
+    return { c, m };
+  };
+
+  it('canary 200 relocates before any dump or tar is written', async () => {
+    const { c, m } = await run(statusFetch(200));
+    expect(m.location).toBe(`/var/www/auto-wp-backup/${ID}`);
+    const firstArtifact = c.ops.findIndex((o) => o.op === 'exec' || o.op === 'call:db.dump');
+    const removeDocroot = c.ops.findIndex(
+      (o) => o.op === 'remove' && String((o.args as { path: string }).path).startsWith('/var/www/html'),
+    );
+    expect(removeDocroot).toBeGreaterThan(-1);
+    expect(removeDocroot).toBeLessThan(firstArtifact);
+  });
+
+  it('5xx and network errors fail closed (relocate)', async () => {
+    expect((await run(statusFetch(503))).m.location).toContain('/var/www/auto-wp-backup/');
+    const boom = vi.fn(async () => {
+      throw new Error('timeout');
+    }) as unknown as typeof fetch;
+    expect((await run(boom)).m.location).toContain('/var/www/auto-wp-backup/');
+  });
+
+  it('follows a same-host redirect once and judges the target', async () => {
+    const redirectTo = (loc: string, final: number) =>
+      vi.fn(async (u: string | URL | Request) => {
+        const url = String(u);
+        return url.includes('/r/')
+          ? new Response(null, { status: final })
+          : new Response(null, { status: 301, headers: { location: loc } });
+      }) as unknown as typeof fetch;
+    const ok = await run(redirectTo('https://demo.test/r/x', 404));
+    expect(ok.m.location).toBe(DIR);
+    const exposed = await run(redirectTo('https://demo.test/r/x', 200));
+    expect(exposed.m.location).toContain('/var/www/auto-wp-backup/');
+    const cross = await run(redirectTo('https://evil.test/r/x', 404));
+    expect(cross.m.location).toContain('/var/www/auto-wp-backup/');
+  });
+
+  it('passes a timeout signal to fetch', async () => {
+    const f = statusFetch(403);
+    await run(f);
+    const init = (f as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]?.[1];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
 describe('create: safety', () => {
+  it('lock ttl outlasts the longest step', async () => {
+    const c = makeConn();
+    const { svc } = await makeService();
+    await svc.create(makeSite(), c, { pull: false });
+    const ttl = (c.ops.find((o) => o.op === 'call:lock.acquire')?.args as { ttlSec: number }).ttlSec;
+    expect(ttl).toBeGreaterThanOrEqual(2 * 3 * 3600);
+  });
+
   it('aborts when free disk is below 1.2x estimate, before locking or writing', async () => {
     const c = makeConn({ diskFreeBytes: 1_000_000 });
     const { svc } = await makeService();

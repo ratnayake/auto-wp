@@ -15,6 +15,12 @@ export const DB_FILE = 'db.sql.gz';
 export const FILES_FILE = 'files.tar.gz';
 export const MANIFEST_FILE = 'manifest.json';
 export const SIG_FILE = 'manifest.json.sig';
+export const CANARY_FILE = 'canary.txt';
+
+export const FETCH_TIMEOUT_MS = 15_000;
+/** Remote lock lifetime: must outlast the slowest steps (each exec is capped at 3h; dump + tar + margin). */
+export const EXEC_TIMEOUT_MS = 3 * 3600_000;
+export const LOCK_TTL_SEC = 8 * 3600;
 
 /** Needed free space as a multiple of the estimated backup size. */
 export const DISK_SAFETY_FACTOR = 1.2;
