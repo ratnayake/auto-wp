@@ -4,4 +4,6 @@ packages:
   - e2e
 
 allowBuilds:
+  cpu-features: false
   esbuild: true
+  ssh2: false

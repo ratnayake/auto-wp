@@ -76,7 +76,7 @@ export interface InventoryService {
 
 export interface VulnProvider {
   readonly name: 'wordfence' | 'wpscan' | 'patchstack';
-  lookup(type: ItemType, slug: string): Promise<Vulnerability[]>;
+  lookup(type: ItemType, slug: string, hint?: { versions?: string[] }): Promise<Vulnerability[]>;
 }
 
 export interface VulnService {
@@ -86,10 +86,41 @@ export interface VulnService {
 }
 
 export interface HealthChecker {
-  snapshot(site: SiteConfig, c: SiteConnection, label: string): Promise<HealthSnapshot>;
-  /** Fast check against a baseline: HTTP, critical-error marker, new log fatals. No screenshots. */
-  quick(site: SiteConfig, c: SiteConnection, baseline: HealthSnapshot): Promise<ComparisonResult>;
+  /**
+   * @param o.bypassToken maintenance-mode bypass cookie value; send it when the site is in maintenance mode
+   */
+  snapshot(
+    site: SiteConfig,
+    c: SiteConnection,
+    label: string,
+    o?: {
+      /** maintenance-mode bypass cookie value; send it when the site is in maintenance mode */
+      bypassToken?: string;
+    },
+  ): Promise<HealthSnapshot>;
+  /**
+   * Fast check against a baseline: HTTP, critical-error marker, new log fatals. No screenshots.
+   * @param o.bypassToken maintenance-mode bypass cookie value; send it when the site is in maintenance mode
+   */
+  quick(
+    site: SiteConfig,
+    c: SiteConnection,
+    baseline: HealthSnapshot,
+    o?: {
+      /** maintenance-mode bypass cookie value; send it when the site is in maintenance mode */
+      bypassToken?: string;
+    },
+  ): Promise<ComparisonResult>;
   compare(before: HealthSnapshot, after: HealthSnapshot, t: Thresholds): Promise<ComparisonResult>;
+}
+
+export interface MaintenanceService {
+  set(
+    site: SiteConfig,
+    c: SiteConnection,
+    enabled: boolean,
+    o?: { bypassToken?: string },
+  ): Promise<{ enabled: boolean }>;
 }
 
 export interface UpdaterOptions {

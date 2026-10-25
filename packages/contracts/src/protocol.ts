@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 export const SIG_VERSION = 'AUTOWP-SIG-V1';
 export const CLOCK_SKEW_SEC = 300;
 export const NONCE_TTL_SEC = 600;
+export const MAINTENANCE_BYPASS_COOKIE = 'autowp_bypass';
 
 export const HEADERS = {
   site: 'X-AutoWP-Site',
