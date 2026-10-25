@@ -59,8 +59,12 @@ if [ -f "$AGENT_DIR/dist/agent.php" ] && [ -f "$AGENT_DIR/bin/install.php" ]; th
   PUB=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['ed25519']['publicKeyB64'])" "$VEC")
   KEYID=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['keyId'])" "$VEC")
   # Run as www-data (uid 33) in a php container sharing the wp-locked volume; deploys <docroot>/auto-wp-agent/.
-  docker run --rm -u 33:33 -v "autowp-e2e_locked-html:/var/www/html" -v "$AGENT_DIR:/agent-php:ro" php:8.4-cli     php /agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id "$KEYID" \
-    --ed25519-public-key "$PUB" --force && touch "$TMP/agent-installed"
+  # Only the docroot is a volume, so the agent's data dir has to live inside it (denied by .htaccess), and
+  # the test site is plain http on loopback.
+  docker run --rm -u 33:33 -v "autowp-e2e_locked-html:/var/www/html" -v "$AGENT_DIR:/agent-php:ro" php:8.4-cli \
+    php /agent-php/bin/install.php --docroot /var/www/html --site-id site-agent --key-id "$KEYID" \
+    --ed25519-public-key "$PUB" --allow-data-in-docroot --allow-insecure-http --force &&
+    touch "$TMP/agent-installed"
 else
   echo "agent-php not built; agent scenarios will be skipped"
 fi
