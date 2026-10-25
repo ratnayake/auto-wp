@@ -32,6 +32,7 @@ import {
 } from './constants.js';
 import { BackupError, DiskSpaceError, ExposureError, LockError } from './errors.js';
 import { listLocalIds, localSiteDir, pullBackup, removeLocal, selectPrune } from './local.js';
+import { assertTrustedManifest } from './validate.js';
 
 type DbMethod = BackupManifest['method']['db'];
 type Location = 'docroot' | 'outside';
@@ -54,6 +55,8 @@ export interface BackupServiceDeps {
   dataDir: string;
   /** Signs the exact bytes of manifest.json; the signature is stored base64 in manifest.json.sig. */
   signManifest?: (bytes: Buffer) => Promise<Buffer>;
+  /** Verifies manifest.json.sig when pulling; a failed or missing signature rejects the pull. */
+  verifyManifest?: (bytes: Buffer, sig: Buffer) => Promise<boolean>;
   rclone?: RcloneRunner;
   randomHex?: (bytes: number) => string;
   dbCredentials?: DbCredentialsProvider;
@@ -141,7 +144,7 @@ export class DefaultBackupService implements BackupService {
       });
       if (pull) {
         say('pulling artifacts');
-        const localDir = await pullBackup(conn, this.deps.dataDir, dir, manifest);
+        const localDir = await this.pullOne(site, conn, dir, manifest);
         const remote = site.offsite.rcloneRemote;
         if (remote) {
           say('copying off-site with rclone');
@@ -156,7 +159,14 @@ export class DefaultBackupService implements BackupService {
         }
       }
       say('applying retention');
-      await this.applyRetention(site, conn, caps, id, retention);
+      try {
+        await this.applyRetention(site, conn, caps, id, retention);
+      } catch (e) {
+        this.deps.logger.warn(
+          { siteId: site.id, err: (e as Error).message },
+          'retention failed; backup is intact',
+        );
+      }
       return manifest;
     } finally {
       try {
@@ -467,8 +477,13 @@ export class DefaultBackupService implements BackupService {
     return [...new Set(out)];
   }
 
-  private async listRemote(conn: SiteConnection, caps: Capabilities): Promise<BackupManifest[]> {
-    const out: BackupManifest[] = [];
+  /** Manifests with the folder they were found in; `location` from the manifest is never used. */
+  private async listRemote(
+    site: SiteConfig,
+    conn: SiteConnection,
+    caps: Capabilities,
+  ): Promise<Array<{ manifest: BackupManifest; dir: string }>> {
+    const out: Array<{ manifest: BackupManifest; dir: string }> = [];
     for (const base of this.bases(caps)) {
       let entries: Awaited<ReturnType<SiteConnection['list']>>;
       try {
@@ -479,26 +494,39 @@ export class DefaultBackupService implements BackupService {
       for (const e of entries) {
         const name = posix.basename(e.path);
         if (e.type !== 'dir' || !BACKUP_ID_RE.test(name)) continue;
+        const dir = posix.join(base, name);
         try {
-          const raw = await conn.readFile(posix.join(base, name, MANIFEST_FILE));
-          out.push(BackupManifestSchema.parse(JSON.parse(raw.toString())));
+          const raw = await conn.readFile(posix.join(dir, MANIFEST_FILE));
+          const manifest = BackupManifestSchema.parse(JSON.parse(raw.toString()));
+          assertTrustedManifest(manifest, { backupId: name, siteId: site.id });
+          out.push({ manifest, dir });
         } catch (err) {
-          this.deps.logger.warn({ dir: e.path, err: (err as Error).message }, 'skipping unreadable backup');
+          this.deps.logger.warn(
+            { dir, err: (err as Error).message },
+            'skipping unreadable or untrusted backup',
+          );
         }
       }
     }
-    return out.sort((a, b) => b.backupId.localeCompare(a.backupId));
+    return out.sort((a, b) => b.manifest.backupId.localeCompare(a.manifest.backupId));
   }
 
-  async list(_site: SiteConfig, conn: SiteConnection): Promise<BackupManifest[]> {
-    return this.listRemote(conn, await conn.probe());
+  async list(site: SiteConfig, conn: SiteConnection): Promise<BackupManifest[]> {
+    return (await this.listRemote(site, conn, await conn.probe())).map((e) => e.manifest);
   }
 
   async pull(site: SiteConfig, conn: SiteConnection, backupId: string): Promise<{ localDir: string }> {
     const caps = await conn.probe();
-    const m = (await this.listRemote(conn, caps)).find((x) => x.backupId === backupId);
-    if (!m) throw new BackupError(`backup ${backupId} not found on ${site.id}`);
-    return { localDir: await pullBackup(conn, this.deps.dataDir, m.location, m) };
+    const e = (await this.listRemote(site, conn, caps)).find((x) => x.manifest.backupId === backupId);
+    if (!e) throw new BackupError(`backup ${backupId} not found on ${site.id}`);
+    return { localDir: await this.pullOne(site, conn, e.dir, e.manifest) };
+  }
+
+  private pullOne(site: SiteConfig, conn: SiteConnection, dir: string, m: BackupManifest): Promise<string> {
+    return pullBackup(conn, this.deps.dataDir, dir, m, {
+      siteId: site.id,
+      verifyManifest: this.deps.verifyManifest,
+    });
   }
 
   async prune(
@@ -509,19 +537,19 @@ export class DefaultBackupService implements BackupService {
   ): Promise<{ removed: string[] }> {
     if (!Number.isInteger(keep) || keep < 1) throw new BackupError('prune: keep must be an integer >= 1');
     const caps = await conn.probe();
-    const all = await this.listRemote(conn, caps);
-    const removed = selectPrune(
-      all.map((m) => m.backupId),
-      keep,
-    );
-    if (!o.dryRun) {
-      for (const id of removed) {
-        const m = all.find((x) => x.backupId === id);
-        if (m) await conn.remove(m.location, { recursive: true });
-      }
-    }
+    const all = await this.listRemote(site, conn, caps);
+    const removed = selectPrune([...new Set(all.map((e) => e.manifest.backupId))], keep);
+    if (!o.dryRun) await this.removeRemote(conn, all, removed);
     this.deps.logger.info({ siteId: site.id, removed, dryRun: !!o.dryRun }, 'prune');
     return { removed };
+  }
+
+  private async removeRemote(
+    conn: SiteConnection,
+    all: Array<{ manifest: BackupManifest; dir: string }>,
+    ids: readonly string[],
+  ): Promise<void> {
+    for (const e of all) if (ids.includes(e.manifest.backupId)) await conn.remove(e.dir, { recursive: true });
   }
 
   private async applyRetention(
@@ -531,16 +559,13 @@ export class DefaultBackupService implements BackupService {
     newId: string,
     retention: { remote: number; local: number },
   ): Promise<void> {
-    const all = await this.listRemote(conn, caps);
+    const all = await this.listRemote(site, conn, caps);
     const remote = selectPrune(
-      all.map((m) => m.backupId),
+      [...new Set(all.map((e) => e.manifest.backupId))],
       Math.max(1, retention.remote),
       newId,
     );
-    for (const id of remote) {
-      const m = all.find((x) => x.backupId === id);
-      if (m) await conn.remove(m.location, { recursive: true });
-    }
+    await this.removeRemote(conn, all, remote);
     const local = selectPrune(
       await listLocalIds(this.deps.dataDir, site.id),
       Math.max(1, retention.local),
@@ -568,7 +593,7 @@ export class DefaultBackupService implements BackupService {
   ): Promise<BackupPreview> {
     const dir = posix.join(this.baseDir(caps, loc), id);
     const base = posix.dirname(dir);
-    const existing = await this.listRemote(conn, caps);
+    const existing = (await this.listRemote(site, conn, caps)).map((e) => e.manifest);
     const remotePrune = selectPrune(
       [...existing.map((m) => m.backupId), id],
       Math.max(1, p.retention.remote),

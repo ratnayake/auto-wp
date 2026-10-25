@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
-import { join, posix } from 'node:path';
-import type { BackupManifest, SiteConnection } from '@auto-wp/contracts';
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { join, posix, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { type BackupManifest, BackupManifestSchema, type SiteConnection } from '@auto-wp/contracts';
 import { BACKUP_ID_RE, MANIFEST_FILE, SIG_FILE } from './constants.js';
-import { HashMismatchError } from './errors.js';
+import { BackupError, HashMismatchError } from './errors.js';
+import { assertTrustedManifest } from './validate.js';
 
 export const localSiteDir = (dataDir: string, siteId: string): string => join(dataDir, 'backups', siteId);
 
@@ -43,8 +45,13 @@ export async function pullBackup(
   dataDir: string,
   remoteDir: string,
   m: BackupManifest,
+  o: { siteId: string; verifyManifest?: (bytes: Buffer, sig: Buffer) => Promise<boolean> },
 ): Promise<string> {
-  const final = join(localSiteDir(dataDir, m.siteId), m.backupId);
+  assertTrustedManifest(m, { siteId: o.siteId });
+  const siteDir = resolve(localSiteDir(dataDir, o.siteId));
+  const final = resolve(siteDir, m.backupId);
+  if (!final.startsWith(siteDir + sep))
+    throw new BackupError('refusing to write outside the backup directory');
   const tmp = `${final}.partial`;
   await rm(tmp, { recursive: true, force: true });
   await mkdir(tmp, { recursive: true, mode: 0o700 });
@@ -62,8 +69,34 @@ export async function pullBackup(
       if (name === SIG_FILE && !(await conn.stat(remote))) continue;
       await streamToFile(conn, remote, join(tmp, name));
     }
-    await rm(final, { recursive: true, force: true });
-    await rename(tmp, final);
+    // the stored manifest must be the one whose hashes we just verified
+    const stored = await readFile(join(tmp, MANIFEST_FILE));
+    if (!isDeepStrictEqual(BackupManifestSchema.parse(JSON.parse(stored.toString())), m)) {
+      throw new BackupError('manifest.json changed on the server while it was being pulled');
+    }
+    if (o.verifyManifest) {
+      let sig: Buffer;
+      try {
+        sig = Buffer.from((await readFile(join(tmp, SIG_FILE))).toString().trim(), 'base64');
+      } catch {
+        throw new BackupError('manifest signature missing');
+      }
+      if (!(await o.verifyManifest(stored, sig))) throw new BackupError('manifest signature is invalid');
+    }
+    // swap in place without ever leaving the site without a good copy
+    const old = `${final}.old`;
+    await rm(old, { recursive: true, force: true });
+    const hadOld = await rename(final, old).then(
+      () => true,
+      () => false,
+    );
+    try {
+      await rename(tmp, final);
+    } catch (e) {
+      if (hadOld) await rename(old, final).catch(() => {});
+      throw e;
+    }
+    await rm(old, { recursive: true, force: true });
   } catch (e) {
     await rm(tmp, { recursive: true, force: true });
     throw e;
