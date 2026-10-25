@@ -209,7 +209,7 @@ describe('file operations', () => {
     await h.conn.mkdir('big/x/y', { recursive: true });
     await h.conn.writeFile('big/x/y/f.txt', 'x');
     h.client.execHandler = (cmd) => {
-      if (cmd.includes(`'rm' '-rf' '--' '/home/u/public_html/big'`))
+      if (cmd.includes(`exec rm -rf -- "$1"' 'sh' '/home/u/public_html/big'`))
         for (const k of [...h.sftp.files.keys()])
           if (k.startsWith('/home/u/public_html/big')) h.sftp.files.delete(k);
       return { stdout: '' };
@@ -222,7 +222,9 @@ describe('file operations', () => {
     };
     // The fake rm only drops files; the empty dirs left behind are cleaned via the SFTP fallback.
     await h.conn.remove('big', { recursive: true });
-    expect(h.client.commands.some((c) => c.includes(`'rm' '-rf' '--' '/home/u/public_html/big'`))).toBe(true);
+    expect(
+      h.client.commands.some((c) => c.includes(`exec rm -rf -- "$1"' 'sh' '/home/u/public_html/big'`)),
+    ).toBe(true);
     expect(unlinks).toBe(0);
     expect(await h.conn.stat('big')).toBeNull();
   });

@@ -96,9 +96,14 @@ function optionalBrowser(env: Env, logger: Logger): BrowserFactory | undefined {
   };
 }
 
-/** Out-of-band approval used when the MCP client cannot elicit: env (tests only) or the controlling TTY. */
+/**
+ * Out-of-band approval used when the MCP client cannot elicit: env (tests only) or the controlling TTY. The
+ * TTY is used only when stdin is a terminal: under stdio MCP, stdin is the client's pipe and the terminal
+ * belongs to the client's own UI.
+ */
 function approvalGate(env: Env, logger: Logger, clock: Clock): ApprovalGate | undefined {
   if (env.AUTOWP_TEST_APPROVE === '1') return new EnvApprovalGate(logger, env as NodeJS.ProcessEnv, clock);
+  if (!process.stdin.isTTY) return undefined;
   try {
     closeSync(openSync('/dev/tty', 'r+'));
     return new TtyApprovalGate(undefined, clock);
@@ -111,16 +116,24 @@ function vulnProviders(config: AppConfig, secrets: SecretStore, env: Env, logger
   const cacheDir = join(config.dataDir, 'vulndb');
   const v = config.vulndb;
   const minRecords = env.AUTOWP_WORDFENCE_MIN_RECORDS ? Number(env.AUTOWP_WORDFENCE_MIN_RECORDS) : undefined;
-  const providers: VulnProvider[] = [
-    new WordfenceProvider({
-      cacheDir,
-      clock,
-      logger,
-      feedUrl: env.AUTOWP_WORDFENCE_FEED_URL || v.wordfenceFeedUrl,
-      apiKey: v.wordfenceApiKeyRef ? () => secrets.get(v.wordfenceApiKeyRef as string) : undefined,
-      ...(minRecords !== undefined && Number.isInteger(minRecords) && minRecords >= 0 ? { minRecords } : {}),
-    }),
-  ];
+  const feedUrl = env.AUTOWP_WORDFENCE_FEED_URL || v.wordfenceFeedUrl;
+  const providers: VulnProvider[] = [];
+  // The production Wordfence feed needs an API key; a custom feed URL (mirror, mock) may not.
+  if (v.wordfenceApiKeyRef || feedUrl) {
+    const ref = v.wordfenceApiKeyRef;
+    providers.push(
+      new WordfenceProvider({
+        cacheDir,
+        clock,
+        logger,
+        feedUrl,
+        apiKey: ref ? () => secrets.get(ref) : undefined,
+        ...(minRecords !== undefined && Number.isInteger(minRecords) && minRecords >= 0
+          ? { minRecords }
+          : {}),
+      }),
+    );
+  }
   if (v.wpscanTokenRef) {
     const ref = v.wpscanTokenRef;
     providers.push(
@@ -133,6 +146,10 @@ function vulnProviders(config: AppConfig, secrets: SecretStore, env: Env, logger
       }),
     );
   }
+  if (providers.length === 0)
+    logger.warn(
+      'no vulnerability source configured (vulndb.wordfenceApiKeyRef, vulndb.wordfenceFeedUrl or vulndb.wpscanTokenRef); reports will show lookups as failed',
+    );
   return providers;
 }
 

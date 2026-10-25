@@ -67,6 +67,7 @@ export class RunManager {
     site: SiteConfig,
     c: SiteConnection,
     only?: string[],
+    o: { plan?: boolean } = {},
   ): Promise<{ items: UpdateItem[]; plan: UpdateItem[]; installedCore?: string }> {
     const inv = this.s.inventory;
     const detection = inv.inspect ? await inv.inspect(c) : { items: await inv.detect(c) };
@@ -76,6 +77,7 @@ export class RunManager {
       items = items.filter((i) => keys.has(itemKey(i)));
     }
     const installedCore = 'installedCore' in detection ? detection.installedCore : undefined;
+    if (o.plan === false) return { items, plan: [], installedCore };
     const plan = inv.plan(items, await c.probe(), this.policy(site), installedCore);
     return { items, plan, installedCore };
   }
@@ -145,7 +147,9 @@ export class RunManager {
     }
     const now = this.s.clock.now();
     const ageMin = (now.getTime() - new Date(v.verifiedAt).getTime()) / 60_000;
-    if (!new PolicyEngine(policy).backupFreshEnough(v.verifiedAt, now)) {
+    // Tolerate up to 5 minutes of clock skew for a verification stamped "in the future".
+    const skewed = ageMin < 0 && ageMin >= -5 ? now : new Date(v.verifiedAt);
+    if (!new PolicyEngine(policy).backupFreshEnough(skewed, now)) {
       throw new UserError(
         `Backup "${backupId}" was verified ${Math.round(ageMin)} minutes ago; policy allows ${maxAge}. ${hint}`,
       );

@@ -240,7 +240,7 @@ export function buildServerWithRuns(
 
     async updates_check({ siteId }) {
       return withConn(siteId, async (site, c) => {
-        const { items, installedCore } = await runs.detectAndPlan(site, c);
+        const { items, installedCore } = await runs.detectAndPlan(site, c, undefined, { plan: false });
         const assessments = await s.vulns.assess(items);
         const attributions = s.vulns.attributions();
         return {

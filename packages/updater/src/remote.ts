@@ -1,6 +1,11 @@
 import type { Capabilities, ExecResult, ItemType, SiteConnection } from '@auto-wp/contracts';
 import { absPath } from './paths.js';
 
+/** A remote command ran to completion with a non-zero exit code. */
+export class WpCliExitError extends Error {
+  override name = 'WpCliExitError';
+}
+
 /** Thin helpers that pick SSH/WP-CLI execution when available and fall back to agent actions. */
 export class Remote {
   constructor(
@@ -24,7 +29,7 @@ export class Remote {
     const r = await this.c.exec(argv, { cwd: this.caps.wpRoot });
     if (r.exitCode !== 0) {
       const detail = (r.stderr || r.stdout).trim().slice(0, 500);
-      throw new Error(`${what} failed (exit ${r.exitCode})${detail ? `: ${detail}` : ''}`);
+      throw new WpCliExitError(`${what} failed (exit ${r.exitCode})${detail ? `: ${detail}` : ''}`);
     }
     return r;
   }
@@ -76,8 +81,10 @@ export class Remote {
         await this.c.rename(partial, path);
         return { path, method: 'wpcli' };
       } catch (e) {
+        // Only a clean non-zero exit falls back: after a timeout the export may still be running remotely.
+        if (!(e instanceof WpCliExitError)) throw e;
         await this.c.remove(partial).catch(() => undefined);
-        onFallback?.(e instanceof Error ? e.message : String(e));
+        onFallback?.(e.message);
       }
     }
     const path = `${destBase}.sql.gz`;

@@ -182,6 +182,20 @@ export class DefaultUpdater implements Updater {
           continue;
         }
         const now = clock.now().toISOString();
+        if (item.heldReason) {
+          const r: ItemResult = {
+            item,
+            outcome: 'held',
+            startedAt: now,
+            finishedAt: now,
+            error: item.heldReason,
+            operations: [`held: ${item.heldReason}`],
+          };
+          results.set(key, r);
+          await persist();
+          yield r;
+          continue;
+        }
         if (stopReason) {
           const r: ItemResult = {
             item,
@@ -190,19 +204,6 @@ export class DefaultUpdater implements Updater {
             finishedAt: now,
             error: stopReason,
             operations: [],
-          };
-          results.set(key, r);
-          await persist();
-          yield r;
-          continue;
-        }
-        if (item.heldReason) {
-          const r: ItemResult = {
-            item,
-            outcome: 'held',
-            startedAt: now,
-            finishedAt: now,
-            operations: [`held: ${item.heldReason}`],
           };
           results.set(key, r);
           await persist();

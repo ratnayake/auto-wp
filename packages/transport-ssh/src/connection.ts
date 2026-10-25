@@ -572,7 +572,9 @@ export class SshSiteConnection implements SiteConnection {
     const a = await sftp.lstat(real);
     if (!a || toFileStat(real, a).type !== 'dir') return false;
     try {
-      const r = await this.run(buildCommand(['rm', '-rf', '--', real]), undefined, 30 * 60_000);
+      // Re-resolve right before deleting so a component swapped for a symlink since the jail check is refused.
+      const script = '[ "$(realpath -e -- "$1")" = "$1" ] && exec rm -rf -- "$1"';
+      const r = await this.run(buildCommand(['sh', '-c', script, 'sh', real]), undefined, 30 * 60_000);
       if (r.exitCode !== 0) {
         this.deps.logger.warn(
           { siteId: this.siteId, err: r.stderr.slice(0, 200) },

@@ -15,7 +15,7 @@ import {
 import type { NeedsDbSnapshot } from './db-snapshot-policy.js';
 import { assertSafeItem, itemSnapshotBase } from './paths.js';
 import type { DbSnapshot, Remote } from './remote.js';
-import { msg } from './util.js';
+import { compareVersions, msg } from './util.js';
 
 export interface ItemContext {
   site: SiteConfig;
@@ -205,7 +205,11 @@ async function updateAndCheck(
     ops.push(...updateOps);
     installedVersion = await remote.installedVersion(item.type, item.slug);
     ops.push(`verify installed version: ${installedVersion ?? 'unknown'}`);
-    if (installedVersion !== item.newVersion)
+    // Plugins/themes install the version WordPress offers at run time, which may be newer than planned.
+    const acceptable =
+      installedVersion === item.newVersion ||
+      (item.type !== 'core' && !!installedVersion && compareVersions(installedVersion, item.newVersion) > 0);
+    if (!acceptable)
       failure = `installed version ${installedVersion ?? 'unknown'} != expected ${item.newVersion}`;
   } catch (e) {
     failure = `update failed: ${msg(e)}`;
@@ -326,7 +330,7 @@ async function withCurrentLogOffsets(ctx: ItemContext, baseline: HealthSnapshot)
     try {
       logOffsets[path] = (await ctx.remote.c.call('logs.tail', { path, fromOffset: 0, maxBytes: 1 })).size;
     } catch (e) {
-      if (/not.?found|ENOENT|no such file/i.test(msg(e))) logOffsets[path] = 0;
+      if (/not.?found|ENOENT|no such file|does not exist/i.test(msg(e))) logOffsets[path] = 0;
     }
   }
   return { ...baseline, logOffsets };

@@ -139,6 +139,21 @@ describe('DefaultUpdater', () => {
     expect(t.health.baselines[1]?.logOffsets).toEqual({ 'wp-content/debug.log': 900, error_log: 0 });
   });
 
+  it('accepts a newer plugin version than planned (WP-CLI installs the current offer)', async () => {
+    const t = setup({ shell: true });
+    t.state.offers.set('plugin:foo', '1.2.0');
+    const res = await collect(t.updater.apply(site, t.conn, [foo], t.opts));
+    expect(res[0]).toMatchObject({ outcome: 'updated', installedVersion: '1.2.0' });
+  });
+
+  it('reports a held item as held even after the run stopped', async () => {
+    const t = setup({ health: new FakeHealth([BAD, OK]) });
+    const held = { ...bar, heldReason: 'held by policy' };
+    const res = await collect(t.updater.apply(site, t.conn, [core, held], t.opts));
+    expect(res.map((r) => r.outcome)).toEqual(['failed-rolled-back', 'held']);
+    expect(res[1]?.error).toBe('held by policy');
+  });
+
   it('falls back to the agent db.dump when wp db export fails', async () => {
     const t = setup({ shell: true, health: new FakeHealth([BAD, OK]) });
     t.conn.onExec(
