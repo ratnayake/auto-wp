@@ -113,6 +113,12 @@ importers:
         specifier: ^1.15.6
         version: 1.15.6
 
+  packages/updater:
+    dependencies:
+      '@auto-wp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/verify:
     dependencies:
       '@auto-wp/contracts':
