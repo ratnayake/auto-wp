@@ -10,6 +10,7 @@ import {
   type Capabilities,
   type Clock,
   type Logger,
+  mergePolicy,
   PolicySchema,
   type SiteConfig,
   type SiteConnection,
@@ -190,7 +191,8 @@ export class DefaultBackupService implements BackupService {
   }
 
   private retention(site: SiteConfig): { remote: number; local: number } {
-    return site.policy.retention ?? PolicySchema.parse({}).retention;
+    // Site overrides only; the app-level policy is merged in by the caller once wired (see mergePolicy).
+    return mergePolicy(PolicySchema.parse({}), site.policy).retention;
   }
 
   private initialLocation(site: SiteConfig, caps: Capabilities): Location {
