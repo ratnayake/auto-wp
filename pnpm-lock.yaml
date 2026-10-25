@@ -82,6 +82,12 @@ importers:
         specifier: ^1.15.6
         version: 1.15.6
 
+  packages/verify:
+    dependencies:
+      '@auto-wp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
 packages:
 
   '@biomejs/biome@2.6.2':
