@@ -85,6 +85,12 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
+  packages/report:
+    dependencies:
+      '@auto-wp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/safety:
     dependencies:
       '@auto-wp/contracts':
