@@ -1,0 +1,47 @@
+[
+  {
+    "name": "akismet",
+    "title": "Akismet Anti-Spam",
+    "status": "active",
+    "version": "5.3.5",
+    "update_version": "5.4",
+    "update": "available",
+    "file": "akismet/akismet.php"
+  },
+  {
+    "name": "contact-form-7",
+    "title": "Contact Form 7",
+    "status": "active",
+    "version": "6.0.1",
+    "update_version": "",
+    "update": "none",
+    "file": "contact-form-7/wp-contact-form-7.php"
+  },
+  {
+    "name": "hello",
+    "title": "Hello Dolly",
+    "status": "inactive",
+    "version": "1.7.2",
+    "update_version": "1.8",
+    "update": "available",
+    "file": "hello/hello.php"
+  },
+  {
+    "name": "site-helper",
+    "title": "Site Helper",
+    "status": "must-use",
+    "version": "1.0.0",
+    "update_version": "2.0.0",
+    "update": "available",
+    "file": "mu-plugins/site-helper.php"
+  },
+  {
+    "name": "woocommerce",
+    "title": "WooCommerce",
+    "status": "active-network",
+    "version": "9.2.3",
+    "update_version": "10.0.0",
+    "update": "available",
+    "file": "woocommerce/woocommerce.php"
+  }
+]

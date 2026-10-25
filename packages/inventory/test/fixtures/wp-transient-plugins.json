@@ -1,0 +1,24 @@
+{
+  "response": {
+    "woocommerce/woocommerce.php": {
+      "id": "w.org/plugins/woocommerce",
+      "slug": "woocommerce",
+      "plugin": "woocommerce/woocommerce.php",
+      "new_version": "10.0.0",
+      "url": "https://wordpress.org/plugins/woocommerce/",
+      "package": "https://downloads.wordpress.org/plugin/woocommerce.10.0.0.zip",
+      "requires": "6.7",
+      "requires_php": "7.4",
+      "requires_plugins": []
+    },
+    "akismet/akismet.php": {
+      "slug": "akismet",
+      "plugin": "akismet/akismet.php",
+      "new_version": "5.4",
+      "requires": "6.0",
+      "requires_php": "5.6.20",
+      "requires_plugins": []
+    }
+  },
+  "no_update": []
+}
