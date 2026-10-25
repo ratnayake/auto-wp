@@ -9,3 +9,5 @@ agent-php/vendor
 deploy/docker/config.yaml
 deploy/docker/secrets
 deploy/docker/.env
+docs/.vitepress/cache
+docs/.vitepress/dist
