@@ -1,13 +1,18 @@
 import { createHash } from 'node:crypto';
 import {
   GATED_TOOLS,
+  type ItemVulnAssessment,
+  itemKey,
   READ_ONLY_TOOLS,
   RUN_REPORT_RESOURCE,
+  type SiteConnection,
   TOOL_NAMES,
   TOOL_VERSION,
   type ToolName,
   toolInputSchemas,
+  type UpdateItem,
 } from '@auto-wp/contracts';
+import { PolicyEngine } from '@auto-wp/safety';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -178,9 +183,10 @@ export function buildServerWithRuns(
     async site_probe({ siteId }) {
       return withConn(siteId, async (_site, c) => {
         const caps = await c.probe();
+        const wpVersion = await readWpVersion(c);
         return {
-          text: `${siteId}: PHP ${caps.phpVersion}, shell=${caps.shell}, wp-cli=${caps.wpCli.available}, root ${caps.wpRoot}`,
-          data: { capabilities: caps },
+          text: `${siteId}: WordPress ${wpVersion ?? 'unknown'}, PHP ${caps.phpVersion}, shell=${caps.shell}, wp-cli=${caps.wpCli.available}, root ${caps.wpRoot}`,
+          data: { capabilities: caps, ...(wpVersion ? { wpVersion } : {}) },
         };
       });
     },
@@ -233,18 +239,21 @@ export function buildServerWithRuns(
     },
 
     async updates_check({ siteId }) {
-      return withConn(siteId, async (_site, c) => {
-        const items = await s.inventory.detect(c);
-        return { text: describeItems(items), data: { items } };
+      return withConn(siteId, async (site, c) => {
+        const { items, installedCore } = await runs.detectAndPlan(site, c);
+        const assessments = await s.vulns.assess(items);
+        const attributions = s.vulns.attributions();
+        return {
+          text: describeItems(items, assessments),
+          data: { items, assessments, attributions, ...(installedCore ? { installedCore } : {}) },
+        };
       });
     },
 
     async updates_plan({ siteId, only }) {
       return withConn(siteId, async (site, c) => {
-        let items = await s.inventory.detect(c);
-        if (only) items = items.filter((i) => only.includes(`${i.type}:${i.slug}`));
-        const plan = s.inventory.plan(items, await c.probe(), runs.policy(site));
-        return { text: describeItems(plan), data: { plan } };
+        const { plan, installedCore } = await runs.detectAndPlan(site, c, only);
+        return { text: describeItems(plan), data: { plan, ...(installedCore ? { installedCore } : {}) } };
       });
     },
 
@@ -331,7 +340,7 @@ export function buildServerWithRuns(
 
     async maintenance_set({ siteId, enabled }, ctx) {
       const site = runs.site(siteId);
-      if (runs.policy(site).requireApproval.includes('maintenance.set')) {
+      if (new PolicyEngine(runs.policy(site)).requiresApproval('maintenance.set')) {
         await approve(
           ctx,
           'maintenance.set',
@@ -523,14 +532,31 @@ function started(runId: string, prefix: string): Out {
   return { text: `${prefix}. runId=${runId}. Poll run_status.`, data: { runId } };
 }
 
-function describeItems(
-  items: { type: string; slug: string; currentVersion: string; newVersion: string; heldReason?: string }[],
-) {
+/** Installed WordPress version from `wp-includes/version.php` (no WordPress bootstrap); best effort. */
+async function readWpVersion(c: SiteConnection): Promise<string | undefined> {
+  try {
+    const src = (await c.readFile('wp-includes/version.php')).toString('utf8');
+    return /\$wp_version\s*=\s*'([^']+)'/.exec(src)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function describeItems(items: UpdateItem[], assessments: ItemVulnAssessment[] = []) {
   if (items.length === 0) return 'Everything is up to date.';
+  const vulnsOf = new Map(assessments.map((a) => [itemKey(a.item), a]));
   return items
-    .map(
-      (i) =>
-        `${i.type}:${i.slug} ${i.currentVersion} -> ${i.newVersion}${i.heldReason ? ` (held: ${i.heldReason})` : ''}`,
-    )
+    .map((i) => {
+      const a = vulnsOf.get(itemKey(i));
+      const ids = (vs: ItemVulnAssessment['affectingOld']) => vs.map((v) => v.cve ?? v.id).join(', ');
+      const vuln = !a
+        ? ''
+        : a.affectingOld.length
+          ? `; vulnerable: ${ids(a.affectingOld)}${a.stillAffectingNew.length ? ` (still affects ${i.newVersion}: ${ids(a.stillAffectingNew)})` : ''}`
+          : a.lookupFailed?.old
+            ? '; vulnerability lookup failed'
+            : '';
+      return `${itemKey(i)} ${i.currentVersion} -> ${i.newVersion}${i.heldReason ? ` (held: ${i.heldReason})` : ''}${vuln}`;
+    })
     .join('\n');
 }

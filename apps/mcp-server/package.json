@@ -14,7 +14,18 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@auto-wp/backup": "workspace:*",
+    "@auto-wp/config": "workspace:*",
     "@auto-wp/contracts": "workspace:*",
+    "@auto-wp/health": "workspace:*",
+    "@auto-wp/inventory": "workspace:*",
+    "@auto-wp/report": "workspace:*",
+    "@auto-wp/safety": "workspace:*",
+    "@auto-wp/transport-agent": "workspace:*",
+    "@auto-wp/transport-ssh": "workspace:*",
+    "@auto-wp/updater": "workspace:*",
+    "@auto-wp/verify": "workspace:*",
+    "@auto-wp/vulndb": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "pino": "^10.4.0",
     "tsx": "^4.23.15",

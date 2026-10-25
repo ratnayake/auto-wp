@@ -1,15 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { type AppConfig, AppConfigSchema, type Logger } from '@auto-wp/contracts';
+import { loadConfig } from '@auto-wp/config';
+import type { Logger } from '@auto-wp/contracts';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import pino from 'pino';
 import { BearerAuthenticator, parseTokenEntries, sha256Hex } from './auth.js';
 import { startHttpServer } from './http.js';
 import { buildServer } from './server.js';
-import { createServices } from './wire.js';
+import { createServices, isFakeMode } from './wire.js';
 
 const USAGE = `auto-wp-mcp [--stdio | --http] [options]
 
@@ -23,11 +23,19 @@ const USAGE = `auto-wp-mcp [--stdio | --http] [options]
   --trust-proxy <ip>      Proxy peer IP whose X-Forwarded-For is trusted for failed-auth throttling (repeatable)
   --max-body-bytes <n>    HTTP request body limit (default 1048576)
   --rate-limit <n>        HTTP requests per minute per token (default 120)
-  --config <file>         JSON AppConfig (default: $AUTOWP_CONFIG, else no sites)
+  --config <file>         YAML/JSON AppConfig (default: $AUTOWP_CONFIG, else ~/.config/auto-wp/config.yaml
+                          if it exists, else no sites)
   --log-level <level>     pino level (default info; $AUTOWP_LOG_LEVEL)
   --gen-token <id>        Print a new token and its AUTOWP_MCP_TOKENS entry, then exit
 
-Environment: AUTOWP_MCP_TOKENS="id:<sha256 hex of token>,..."  (HTTP bearer tokens)
+Environment:
+  AUTOWP_MCP_TOKENS="id:<sha256 hex of token>,..."  HTTP bearer tokens
+  AUTOWP_SECRET_<NAME>        value for secret:<name> (overrides the keychain / encrypted file)
+  AUTOWP_AGENT_PHP            agent.php deployed over SSH (default: agent-php/dist/agent.php)
+  AUTOWP_WORDFENCE_FEED_URL   Wordfence feed override
+  AUTOWP_PLAYWRIGHT=0         HTTP-only health snapshots
+  AUTOWP_FAKE=1               fake services (no site is contacted)
+  AUTOWP_TEST_APPROVE=1       auto-approve gated actions (TESTS ONLY)
 Logs go to stderr only.`;
 
 function makeLogger(level: string): Logger {
@@ -35,11 +43,6 @@ function makeLogger(level: string): Logger {
     { level, redact: ['token', 'authorization', '*.token', '*.authorization'] },
     pino.destination(2),
   );
-}
-
-async function loadConfig(path: string | undefined): Promise<AppConfig> {
-  if (!path) return AppConfigSchema.parse({ sites: [] });
-  return AppConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -77,11 +80,15 @@ export async function main(argv: string[]): Promise<void> {
   if (v.stdio && v.http) throw new Error('choose either --stdio or --http');
 
   const logger = makeLogger(v['log-level'] ?? process.env.AUTOWP_LOG_LEVEL ?? 'info');
-  const config = await loadConfig(v.config ?? process.env.AUTOWP_CONFIG);
-  const services = createServices(config, { logger });
-  logger.error(
-    'WARNING: FAKE SERVICES IN USE. wire.ts has not been integrated with the real packages: nothing reaches a real site, backups/verification are stubs, and the audit log is in memory only. Do not use in production.',
-  );
+  const explicit = v.config ?? process.env.AUTOWP_CONFIG;
+  const config = await loadConfig(explicit, { allowMissing: !explicit });
+  const services = await createServices(config, { logger });
+  if (isFakeMode()) {
+    logger.error(
+      'WARNING: AUTOWP_FAKE=1: FAKE SERVICES IN USE. Nothing reaches a real site, backups/verification are stubs, and the audit log is in memory only.',
+    );
+  }
+  logger.info({ sites: config.sites.map((x) => x.id), stateDir: config.stateDir }, 'services wired');
 
   if (v.http) {
     const entries = parseTokenEntries(process.env.AUTOWP_MCP_TOKENS ?? '');
