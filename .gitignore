@@ -7,3 +7,6 @@ coverage/
 .env.*
 agent-php/vendor/
 e2e/.tmp/
+deploy/docker/config.yaml
+deploy/docker/secrets/
+!.env.example

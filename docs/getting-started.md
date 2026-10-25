@@ -426,6 +426,59 @@ node apps/mcp-server/bin/auto-wp-mcp.mjs --gen-token laptop
 
 It prints the token once and the `AUTOWP_MCP_TOKENS` entry to store (only the sha256 is kept on the server). The server refuses to start in `--http` mode with no tokens. The systemd unit, Caddyfile, firewall rules and `claude mcp add --transport http ...` are in [apps/mcp-server/docs/deploy-vps.md](../apps/mcp-server/docs/deploy-vps.md).
 
+### Docker on a VPS (Claude Code on your computer)
+
+Use this when Claude Code runs on your own computer and auto-wp should run in Docker on a VPS. Sites are reached from the VPS, for example cPanel sites through the agent. The full walkthrough is in [deploy/docker/README.md](../deploy/docker/README.md).
+
+```text
+Claude Code (your computer) ──HTTPS + bearer token──► VPS: Caddy (TLS) ──► auto-wp container ──HTTPS, signed──► cPanel sites (agent)
+```
+
+`deploy/docker/compose.yaml` runs two containers:
+- **Caddy**, which gets a Let's Encrypt certificate for your domain and is the only container with published ports (80 and 443).
+- **auto-wp**, with no published port. It runs as non-root on a read-only filesystem with no capabilities, and its data is in the `auto-wp-data` volume.
+
+In short:
+1. On the VPS, point a DNS name such as `mcp.example.com` at it and open only ports 22, 80 and 443.
+2. Set up the files:
+
+   ```sh
+   git clone https://github.com/ratnayake/auto-wp.git /opt/auto-wp
+   cd /opt/auto-wp/deploy/docker
+   cp .env.example .env              # set AUTOWP_DOMAIN
+   cp config.example.yaml config.yaml
+   install -d -m 700 secrets
+   ```
+
+3. Create a token for Claude Code. Put the printed `laptop:<sha256>` entry into `AUTOWP_MCP_TOKENS` in `.env` and keep the token itself:
+
+   ```sh
+   docker compose build
+   docker compose run --rm auto-wp --gen-token laptop
+   ```
+
+4. For each site:
+   - Generate an agent key pair. The private seed goes into `secrets/<name>`, owned by uid 1000 and mode 600.
+   - Install the agent on the host with the public key and `--allow-ip <VPS IP>` (see [cPanel shared hosting without SSH](#cpanel-shared-hosting-without-ssh)).
+   - Add the site to `config.yaml` with `signingKeyRef: secret:<name>`.
+
+   At start-up the container turns each file in `secrets/` into `AUTOWP_SECRET_<NAME>`, so secrets never appear in the compose file, the command line or the logs.
+5. Start the stack and check it:
+
+   ```sh
+   docker compose up -d
+   curl -fsS https://mcp.example.com/healthz && echo OK
+   ```
+
+6. On your computer:
+
+   ```sh
+   claude mcp add --transport http auto-wp https://mcp.example.com/mcp \
+     --header "Authorization: Bearer awp_xxxxxxxx"
+   ```
+
+In Docker, `backup_verify` with `deep=true` (the restore drill in a throwaway MariaDB container) is skipped with a warning, because the container has no Docker access. Don't mount the Docker socket into it. Set `AUTOWP_PLAYWRIGHT_IMAGE=0` in `.env` for a smaller image without Chromium; health checks are then HTTP-only.
+
 ## 8. First maintenance run
 
 Ask the assistant in plain words. For example:

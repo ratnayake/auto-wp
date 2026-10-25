@@ -1,0 +1,71 @@
+# auto-wp MCP server + Caddy (TLS) for a VPS. See deploy/docker/README.md.
+#   cd deploy/docker && cp .env.example .env && cp config.example.yaml config.yaml   # then edit both
+#   docker compose up -d --build
+name: auto-wp
+
+services:
+  auto-wp:
+    build:
+      context: ../..
+      args:
+        PLAYWRIGHT: ${AUTOWP_PLAYWRIGHT_IMAGE:-1}
+    image: auto-wp-mcp:local
+    restart: unless-stopped
+    # Caddy is the only peer that reaches 8787; its fixed address keys the failed-auth limiter on the real client IP.
+    command:
+      - --http
+      - --host
+      - 0.0.0.0
+      - --allow-remote
+      - --allowed-host
+      - ${AUTOWP_DOMAIN:?set AUTOWP_DOMAIN in .env}
+      - --trust-proxy
+      - 172.30.0.2
+    environment:
+      AUTOWP_MCP_TOKENS: ${AUTOWP_MCP_TOKENS:-}
+      AUTOWP_LOG_LEVEL: ${AUTOWP_LOG_LEVEL:-info}
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./secrets:/run/secrets/autowp:ro
+      - auto-wp-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    shm_size: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      autowp:
+        ipv4_address: 172.30.0.3
+    # No published ports: only Caddy is reachable from outside.
+
+  caddy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    depends_on: [auto-wp]
+    environment:
+      AUTOWP_DOMAIN: ${AUTOWP_DOMAIN}
+    ports:
+      - "${AUTOWP_HTTP_PORT:-80}:80"
+      - "${AUTOWP_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    networks:
+      autowp:
+        ipv4_address: 172.30.0.2
+
+networks:
+  autowp:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  auto-wp-data:
+  caddy-data:
+  caddy-config:

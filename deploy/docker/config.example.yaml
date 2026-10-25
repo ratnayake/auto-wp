@@ -1,0 +1,20 @@
+# auto-wp config for the Docker deployment. Copy to config.yaml and edit.
+# State (run records, audit log) and pulled backups live in the auto-wp-data volume.
+stateDir: /data/state
+dataDir: /data/data
+
+policy:
+  backupMaxAgeMinutes: 60
+  retention: { remote: 3, local: 14 }
+
+sites:
+  # A cPanel site without SSH, reached through the PHP agent (see docs/getting-started.md, section 6).
+  - id: client1
+    name: Client One
+    url: https://client1.example
+    transport:
+      kind: agent
+      endpoint: https://client1.example/auto-wp-agent/agent.php
+      keyId: k1
+      # Reads the private seed from ./secrets/client1-agent-key
+      signingKeyRef: secret:client1-agent-key

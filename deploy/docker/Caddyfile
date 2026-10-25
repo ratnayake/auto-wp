@@ -1,0 +1,17 @@
+{$AUTOWP_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy auto-wp:8787 {
+		# Do not buffer the MCP SSE streams; long runs report progress over them.
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}
