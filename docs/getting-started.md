@@ -301,6 +301,52 @@ Use this when the host has no SSH.
 
 5. Add the site to `config.yaml` as in the agent example in section 5.
 
+### cPanel shared hosting without SSH
+
+Use the agent when the host gives no SSH or Terminal. You need an HTTPS certificate on the site; cPanel's free AutoSSL is enough. The installer is a command-line PHP script, so without a shell you run it once as a cPanel cron job.
+
+```text
+Claude ⇄ auto-wp (your PC or VPS) ──HTTPS, signed requests──► public_html/auto-wp-agent/agent.php ──► WordPress
+```
+
+1. Generate the key pair on your machine (Agent, step 1 above). Only the **public** key (`example-agent.pub`) goes to the host.
+2. In cPanel **File Manager**, create `/home/cpaneluser/auto-wp-install/`, outside `public_html`. Upload `agent-php/dist/agent.php` and `agent-php/bin/install.php` into it.
+3. Open **Advanced → Cron Jobs**. Add a job set to run every minute, with this command on one line:
+
+   ```sh
+   php /home/cpaneluser/auto-wp-install/install.php --docroot /home/cpaneluser/public_html --site-id my-site --key-id k1 --ed25519-public-key PASTE_PUBLIC_KEY_BASE64 --allow-ip 203.0.113.10 --expires-at 2027-12-31T00:00:00Z --agent /home/cpaneluser/auto-wp-install/agent.php > /home/cpaneluser/auto-wp-install/install.log 2>&1
+   ```
+
+   - If `php` is not found or is too old, use the full path to a binary, for example `/opt/cpanel/ea-php82/root/usr/bin/php`. **MultiPHP Manager** shows the version the site uses.
+   - The public key is not secret, so it is fine in the cron command. Never put the private seed on the host.
+4. Wait a minute or two, then **delete the cron job**. Check the result in File Manager:
+   - `public_html/auto-wp-agent/` exists, with `agent.php`, `config.php` and deny rules.
+   - The private data dir `/home/cpaneluser/.auto-wp-agent-data/` exists, outside `public_html`.
+   - `install.log` may say `... exists (use --force to overwrite)`. That comes from a later cron run and means the first run worked.
+   - Any other `install:` error in the log means it failed. For example, if the home folder is not writable, the data dir would land inside the docroot, which the installer refuses without `--allow-data-in-docroot`.
+5. Delete the `auto-wp-install/` folder.
+6. Add the site to your config:
+
+   ```yaml
+   sites:
+     - id: my-site # must equal --site-id
+       name: My Site
+       url: https://example.com
+       transport:
+         kind: agent
+         endpoint: https://example.com/auto-wp-agent/agent.php
+         keyId: k1 # must equal --key-id
+         signingKeyRef: secret:my-site-agent-key
+   ```
+
+   Then make the seed available as `AUTOWP_SECRET_MY_SITE_AGENT_KEY`, loaded from a file by the launcher script in section 7. Start the server and run `site_probe`.
+
+Notes for the agent on cPanel:
+- **Behind Cloudflare or another proxy:** the IP allowlist checks the connecting IP (`REMOTE_ADDR`), which is then the proxy's, not your VPS's. Either leave out `--allow-ip` and rely on the signature, or add the proxy's IP ranges.
+- **Security plugins and ModSecurity:** a WAF can block the agent's signed POST requests, usually with 403 or 406. The agent itself answers 404 to anything it rejects. If you see 403 or 406, allowlist `/auto-wp-agent/agent.php` in the security plugin, or ask the host about the ModSecurity rule.
+- **Long operations:** backups and upgrades run as resumable jobs in short time slices, so they stay under shared-host `max_execution_time`.
+- **When you're done:** let `--expires-at` pass, or delete `public_html/auto-wp-agent/` and `~/.auto-wp-agent-data/` in File Manager. To reinstall later, repeat steps 2–5; the installer needs `--force` to overwrite an existing install.
+
 ### Verify with `site_probe`
 
 Start the server (section 7) and ask the assistant to run `site_probe` for the site. It reports WordPress, PHP, shell, WP-CLI and the WordPress root. Fix any error before you go on.
