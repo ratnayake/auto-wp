@@ -1,9 +1,8 @@
 name: Docs
 
+# Manual until GitHub Pages is enabled (Settings -> Pages -> Source: GitHub Actions; a private repo needs a
+# paid plan). Then add back:  push: { branches: [main], paths: ["docs/**", ".github/workflows/docs.yml"] }
 on:
-  push:
-    branches: [main]
-    paths: ["docs/**", "package.json", "pnpm-workspace.yaml", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
