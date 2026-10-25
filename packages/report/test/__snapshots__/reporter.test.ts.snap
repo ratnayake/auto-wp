@@ -1,0 +1,303 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`DefaultReporter html > (b) renders the full page with light/dark styles and no external assets 1`] = `
+"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Maintenance report — Example Site</title>
+<style>
+:root { color-scheme: light dark; --bg: #ffffff; --fg: #1d2327; --muted: #646970; --border: #dcdcde;
+  --row: #f6f7f7; --warn: #b32d2e; --link: #2271b1; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #1d2327; --fg: #f0f0f1; --muted: #a7aaad; --border: #3c434a;
+    --row: #2c3338; --warn: #ff8a8a; --link: #72aee6; }
+}
+:root[data-theme="dark"] { --bg: #1d2327; --fg: #f0f0f1; --muted: #a7aaad; --border: #3c434a;
+  --row: #2c3338; --warn: #ff8a8a; --link: #72aee6; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0 auto; max-width: 1100px; padding: 16px; }
+h1 { font-size: 1.6rem; } h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; }
+.summary, .muted { color: var(--muted); }
+a { color: var(--link); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+th { background: var(--row); }
+code { word-break: break-all; }
+.warn { color: var(--warn); font-weight: 600; }
+.fail { color: var(--warn); font-weight: 600; }
+figure { margin: 8px 0; } figure img { max-width: 100%; height: auto; border: 1px solid var(--border); }
+figcaption { color: var(--muted); font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>Maintenance report — Example Site</h1>
+<p class="summary">Generated 2026-10-24T10:30:12.000Z · Run 20261024T103012Z-7f3a9c · Dry run: no · Updated 3 · Failed 0 · Held 0 · Skipped 0 · Run status done</p>
+<p>Site: <a href="https://example.com/" rel="noopener noreferrer">https://example.com</a></p>
+<h2>Backup</h2>
+<p><strong>Backup ID:</strong> 20261024T103012Z-7f3a9c</p><p><strong>Location:</strong> <code>/var/www/example/auto-wp-backup/20261024T103012Z-7f3a9c</code></p><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Size</th><th>SHA-256</th></tr></thead><tbody><tr><td>db.sql.gz</td><td>2.0 KiB (2048 bytes)</td><td><code>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</code></td></tr><tr><td>files.tar.gz</td><td>50.0 MiB (52428800 bytes)</td><td><code>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</code></td></tr></tbody></table></div><p><strong>Verification:</strong> <span class="fail">FAILED</span> (2026-10-24T10:31:00.000Z), 3 checks</p><ul><li>files-manifest (error): <code>{&quot;missing&quot;:[&quot;wp-content/uploads/a.jpg&quot;]}</code></li></ul>
+<h2>1. WordPress core</h2>
+<p><strong>Version:</strong> 6.4.2 → 6.5.1</p><div class="table-wrap"><table><thead><tr><th>ID / CVE</th><th>Title</th><th>CVSS</th><th>Affected range</th><th>Fixed in</th><th>Fixed by this update</th></tr></thead><tbody><tr><td><a href="https://www.wordfence.com/vulnerability/core-1" rel="noopener noreferrer">CVE-2024-0001</a></td><td>Vulnerability core-1</td><td>9.8 (Critical)</td><td>&gt;= 0 &lt; 6.5</td><td>6.5</td><td>yes</td></tr><tr><td><a href="https://www.wordfence.com/vulnerability/core-2" rel="noopener noreferrer">CVE-2024-0002</a></td><td>Stored XSS | in *comments* [x]</td><td>6.1 (Medium)</td><td>&gt;= 6.4 &lt;= 6.4.3, &gt; 6.5.1</td><td>6.5.1</td><td><span class="warn">⚠ no</span></td></tr><tr><td><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-0003" rel="noopener noreferrer">CVE-2024-0003</a></td><td>Open redirect</td><td>4.3 (Medium)</td><td>&lt; 6.5.1</td><td>—</td><td>yes</td></tr></tbody></table></div><p class="muted">Sources: wordfence</p>
+<h2>2. Themes</h2>
+<h3>Twenty Twenty-Four (twentytwentyfour)</h3><p><strong>Version:</strong> 1.1 → 1.2</p><div class="table-wrap"><table><thead><tr><th>ID / CVE</th><th>Title</th><th>CVSS</th><th>Affected range</th><th>Fixed in</th><th>Fixed by this update</th></tr></thead><tbody><tr><td><a href="https://www.wordfence.com/vulnerability/theme-1" rel="noopener noreferrer">CVE-2024-2222</a></td><td>Vulnerability theme-1</td><td>—</td><td>&gt;= 0 &lt; 6.5</td><td>1.2</td><td>yes</td></tr></tbody></table></div><p class="muted">Sources: wordfence</p>
+<h2>3. Plugins (updated only)</h2>
+<h3>Contact Form 7 (contact-form-7)</h3><p><strong>Version:</strong> 5.8.1 → 5.9.3</p><div class="table-wrap"><table><thead><tr><th>ID / CVE</th><th>Title</th><th>CVSS</th><th>Affected range</th><th>Fixed in</th><th>Fixed by this update</th></tr></thead><tbody><tr><td><a href="https://www.wordfence.com/vulnerability/plug-1" rel="noopener noreferrer">CVE-2024-1111</a></td><td>Vulnerability plug-1</td><td>7.5 (High)</td><td>&gt;= 0 &lt; 6.5</td><td>5.9.0</td><td>yes</td></tr><tr><td><a href="https://www.wordfence.com/vulnerability/plug-2" rel="noopener noreferrer">plug-2</a></td><td>SQLi in form export</td><td>8.8 (High)</td><td>&gt;= 0 &lt; 6.5</td><td>5.9.3</td><td><span class="warn">⚠ no</span></td></tr></tbody></table></div><p class="muted">Sources: wordfence, wpscan</p><p class="warn">Lookup errors:</p><ul><li>wpscan: rate limited</li></ul>
+<h2>Failed / rolled back</h2>
+<p>No failed or rolled-back items.</p>
+<h2>Before/after comparison</h2>
+<p><strong>Overall:</strong> <span class="fail">problems found</span></p><div class="table-wrap"><table><thead><tr><th>URL</th><th>Status before → after</th><th>Pixel diff</th><th>Slowdown</th><th>Problems</th></tr></thead><tbody><tr><td>https://example.com/</td><td>200 → 200</td><td>desktop 0.40%, mobile 1.25%</td><td>0 ms</td><td>none</td></tr><tr><td>https://example.com/shop/</td><td>200 → 500 <span class="warn">⚠</span></td><td>—</td><td>850 ms</td><td>status 200 -&gt; 500; critical error marker found</td></tr></tbody></table></div><h3>New log errors</h3><ul><li><code>PHP Fatal error: Call to undefined function woo_init()</code></li></ul>
+<h2>Attributions</h2>
+<ul><li>Vulnerability data by Wordfence Intelligence</li><li>WPScan (https://wpscan.com)</li></ul>
+</body>
+</html>
+"
+`;
+
+exports[`DefaultReporter markdown > (a) renders a report with no vulnerabilities 1`] = `
+"# Maintenance report — Example Site
+
+Generated 2026-10-24T10:30:12.000Z · Run 20261024T103012Z-7f3a9c · Dry run: no · Updated 3 · Failed 0 · Held 0 · Skipped 0 · Run status done
+Site: https://example.com
+
+## Backup
+
+- **Backup ID:** 20261024T103012Z-7f3a9c
+- **Location:** /var/www/example/auto-wp-backup/20261024T103012Z-7f3a9c
+
+| Artifact | Size | SHA-256 |
+| --- | --- | --- |
+| db.sql.gz | 2.0 KiB (2048 bytes) | \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\` |
+| files.tar.gz | 50.0 MiB (52428800 bytes) | \`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\` |
+
+- **Verification:** passed (2026-10-24T10:31:00.000Z), 3 checks
+
+## 1. WordPress core
+
+**Version:** 6.4.2 → 6.5.1
+
+No known vulnerabilities.
+
+Sources: wordfence
+
+## 2. Themes
+
+### Twenty Twenty-Four (twentytwentyfour)
+
+**Version:** 1.1 → 1.2
+
+No known vulnerabilities.
+
+Sources: wordfence
+
+## 3. Plugins (updated only)
+
+### Contact Form 7 (contact-form-7)
+
+**Version:** 5.8.1 → 5.9.3
+
+No known vulnerabilities.
+
+Sources: wordfence
+
+## Failed / rolled back
+
+No failed or rolled-back items.
+
+## Before/after comparison
+
+**Overall:** OK
+
+| URL | Status before → after | Pixel diff | Slowdown | Problems |
+| --- | --- | --- | --- | --- |
+| https://example.com/ | 200 → 200 | desktop 0.40%, mobile 1.25% | 0 ms | none |
+| https://example.com/shop/ | 200 → 500 ⚠ | — | 850 ms | status 200 -\\> 500; critical error marker found |
+
+**New log errors:**
+
+- PHP Fatal error: Call to undefined function woo\\_init()
+
+## Attributions
+
+- Vulnerability data by Wordfence Intelligence
+"
+`;
+
+exports[`DefaultReporter markdown > (b) renders many vulnerabilities, flagging those still affecting the new version 1`] = `
+"# Maintenance report — Example Site
+
+Generated 2026-10-24T10:30:12.000Z · Run 20261024T103012Z-7f3a9c · Dry run: no · Updated 3 · Failed 0 · Held 0 · Skipped 0 · Run status done
+Site: https://example.com
+
+## Backup
+
+- **Backup ID:** 20261024T103012Z-7f3a9c
+- **Location:** /var/www/example/auto-wp-backup/20261024T103012Z-7f3a9c
+
+| Artifact | Size | SHA-256 |
+| --- | --- | --- |
+| db.sql.gz | 2.0 KiB (2048 bytes) | \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\` |
+| files.tar.gz | 50.0 MiB (52428800 bytes) | \`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\` |
+
+- **Verification:** FAILED (2026-10-24T10:31:00.000Z), 3 checks
+- files-manifest (error): {"missing":\\["wp-content/uploads/a.jpg"\\]}
+
+## 1. WordPress core
+
+**Version:** 6.4.2 → 6.5.1
+
+| ID / CVE | Title | CVSS | Affected range | Fixed in | Fixed by this update |
+| --- | --- | --- | --- | --- | --- |
+| [CVE-2024-0001](https://www.wordfence.com/vulnerability/core-1) | Vulnerability core-1 | 9.8 (Critical) | \\>= 0 \\< 6.5 | 6.5 | yes |
+| [CVE-2024-0002](https://www.wordfence.com/vulnerability/core-2) | Stored XSS \\| in \\*comments\\* \\[x\\] | 6.1 (Medium) | \\>= 6.4 \\<= 6.4.3, \\> 6.5.1 | 6.5.1 | ⚠ no |
+| [CVE-2024-0003](https://nvd.nist.gov/vuln/detail/CVE-2024-0003) | Open redirect | 4.3 (Medium) | \\< 6.5.1 | — | yes |
+
+Sources: wordfence
+
+## 2. Themes
+
+### Twenty Twenty-Four (twentytwentyfour)
+
+**Version:** 1.1 → 1.2
+
+| ID / CVE | Title | CVSS | Affected range | Fixed in | Fixed by this update |
+| --- | --- | --- | --- | --- | --- |
+| [CVE-2024-2222](https://www.wordfence.com/vulnerability/theme-1) | Vulnerability theme-1 | — | \\>= 0 \\< 6.5 | 1.2 | yes |
+
+Sources: wordfence
+
+## 3. Plugins (updated only)
+
+### Contact Form 7 (contact-form-7)
+
+**Version:** 5.8.1 → 5.9.3
+
+| ID / CVE | Title | CVSS | Affected range | Fixed in | Fixed by this update |
+| --- | --- | --- | --- | --- | --- |
+| [CVE-2024-1111](https://www.wordfence.com/vulnerability/plug-1) | Vulnerability plug-1 | 7.5 (High) | \\>= 0 \\< 6.5 | 5.9.0 | yes |
+| [plug-2](https://www.wordfence.com/vulnerability/plug-2) | SQLi in form export | 8.8 (High) | \\>= 0 \\< 6.5 | 5.9.3 | ⚠ no |
+
+Sources: wordfence, wpscan
+
+Lookup errors:
+- wpscan: rate limited
+
+## Failed / rolled back
+
+No failed or rolled-back items.
+
+## Before/after comparison
+
+**Overall:** problems found
+
+| URL | Status before → after | Pixel diff | Slowdown | Problems |
+| --- | --- | --- | --- | --- |
+| https://example.com/ | 200 → 200 | desktop 0.40%, mobile 1.25% | 0 ms | none |
+| https://example.com/shop/ | 200 → 500 ⚠ | — | 850 ms | status 200 -\\> 500; critical error marker found |
+
+**New log errors:**
+
+- PHP Fatal error: Call to undefined function woo\\_init()
+
+## Attributions
+
+- Vulnerability data by Wordfence Intelligence
+- WPScan (https://wpscan.com)
+"
+`;
+
+exports[`DefaultReporter markdown > (c) renders failed core and rolled-back plugins 1`] = `
+"# Maintenance report — Example Site
+
+Generated 2026-10-24T10:30:12.000Z · Run 20261024T103012Z-7f3a9c · Dry run: no · Updated 0 · Failed 3 · Held 0 · Skipped 0 · Run status needs-restore · Run error: rollback incomplete
+Site: https://example.com
+
+## Backup
+
+- **Backup ID:** 20261024T103012Z-7f3a9c
+- **Location:** /var/www/example/auto-wp-backup/20261024T103012Z-7f3a9c
+
+| Artifact | Size | SHA-256 |
+| --- | --- | --- |
+| db.sql.gz | 2.0 KiB (2048 bytes) | \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\` |
+| files.tar.gz | 50.0 MiB (52428800 bytes) | \`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\` |
+
+- **Verification:** passed (2026-10-24T10:31:00.000Z), 3 checks
+
+## 1. WordPress core
+
+Core was not updated.
+
+## 2. Themes
+
+No themes were updated.
+
+## 3. Plugins (updated only)
+
+No plugins were updated.
+
+## Failed / rolled back
+
+| Item | Error | Outcome |
+| --- | --- | --- |
+| WordPress (core:wordpress) | health check failed: HTTP 500 on / | failed-rolled-back |
+| WooCommerce (plugin:woocommerce) | plugin activation fatal | failed-rolled-back |
+| Yoast SEO (plugin:yoast) | restore of plugin files failed | failed-rollback-failed |
+
+## Before/after comparison
+
+**Overall:** problems found
+
+| URL | Status before → after | Pixel diff | Slowdown | Problems |
+| --- | --- | --- | --- | --- |
+| https://example.com/ | 200 → 200 | desktop 0.40%, mobile 1.25% | 0 ms | none |
+| https://example.com/shop/ | 200 → 500 ⚠ | — | 850 ms | status 200 -\\> 500; critical error marker found |
+
+**New log errors:**
+
+- PHP Fatal error: Call to undefined function woo\\_init()
+
+## Attributions
+
+None.
+"
+`;
+
+exports[`DefaultReporter markdown > (d) renders the nothing-updated case 1`] = `
+"# Maintenance report — Example Site
+
+Generated 2026-10-24T10:30:12.000Z · Run 20261024T103012Z-7f3a9c · Dry run: yes · Updated 0 · Failed 0 · Held 1 · Skipped 1 · Run status done
+Site: https://example.com
+
+## Backup
+
+No backup was recorded for this run.
+
+## 1. WordPress core
+
+Core was not updated.
+
+## 2. Themes
+
+No themes were updated.
+
+## 3. Plugins (updated only)
+
+No plugins were updated.
+
+## Failed / rolled back
+
+No failed or rolled-back items.
+
+## Before/after comparison
+
+No before/after comparison was recorded.
+
+## Attributions
+
+None.
+"
+`;
