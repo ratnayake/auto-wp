@@ -1,10 +1,5 @@
 # Deploying the MCP server on a VPS
 
-> **WARNING: fake services.** Until `src/wire.ts` is integrated with the real packages, `createServices`
-> returns fakes: nothing reaches a real site, backup verification is a stub, and the audit log is in memory
-> and lost on restart. The server logs a loud error at startup while this is true. Do not rely on this
-> guide's setup for real maintenance until the TODO block in `wire.ts` is resolved.
-
 The server runs outside WordPress and reaches sites over SSH (or the signed PHP agent). Expose it over
 Streamable HTTP behind Caddy (TLS), or run it locally over stdio.
 

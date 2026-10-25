@@ -10,6 +10,8 @@ An MCP server that maintains WordPress sites on shared hosting. It:
 
 The controller runs **outside WordPress** (see [ADR-001](docs/ADR-001-architecture.md)). It reaches each site over SSH + WP-CLI, or through a signed standalone PHP agent ([protocol](docs/agent-protocol.md)) when SSH isn't available.
 
+**Getting started:** see the [getting-started guide](docs/getting-started.md).
+
 ## Layout
 
 | Path                                                 | Purpose                                                                          |
