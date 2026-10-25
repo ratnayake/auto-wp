@@ -10,7 +10,7 @@ An MCP server that maintains WordPress sites on shared hosting. It:
 
 The controller runs **outside WordPress** (see [ADR-001](docs/ADR-001-architecture.md)). It reaches each site over SSH + WP-CLI, or through a signed standalone PHP agent ([protocol](docs/agent-protocol.md)) when SSH isn't available.
 
-**Getting started:** see the [getting-started guide](docs/getting-started.md).
+**Getting started:** read [Choose your setup](docs/guide/choose-setup.md), then the [quick start](docs/guide/quick-start.md). The full documentation is a VitePress site in `docs/`: run `pnpm docs:dev` to read it locally (`pnpm docs:build` makes a static copy).
 
 ## Layout
 

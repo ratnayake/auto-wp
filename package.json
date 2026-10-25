@@ -11,7 +11,9 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "e2e": "vitest run --project e2e"
+    "e2e": "vitest run --project e2e",
+    "docs:dev": "pnpm -F @auto-wp/docs docs:dev",
+    "docs:build": "pnpm -F @auto-wp/docs docs:build"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.2",

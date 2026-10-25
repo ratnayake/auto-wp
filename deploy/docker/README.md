@@ -69,7 +69,7 @@ Repeat this for every site.
    If `secrets/` is already owned by uid 1000 and you are another user, run the command with `sudo sh -c '...'` or as root.
 
    The public key is printed on screen. The seed goes only into the file.
-2. Install the agent on the cPanel account with that public key and `--allow-ip <VPS IP>`. Follow "cPanel shared hosting without SSH" in [getting-started.md](../../docs/getting-started.md#cpanel-shared-hosting-without-ssh), which installs it with a one-off cPanel cron job.
+2. Install the agent on the cPanel account with that public key and `--allow-ip <VPS IP>`. Follow [cPanel without SSH](../../docs/sites/cpanel-no-ssh.md) (start at its step 2), which installs it with a one-off cPanel cron job.
 3. Add the site to `config.yaml`. The secret name in `signingKeyRef` is the file name in `secrets/`:
 
    ```yaml
@@ -104,7 +104,7 @@ claude mcp add --transport http auto-wp https://mcp.example.com/mcp \
 claude mcp list
 ```
 
-Then ask Claude, for example: "List my auto-wp sites and probe client1". Continue with the first maintenance run in [getting-started.md](../../docs/getting-started.md#8-first-maintenance-run):
+Then ask Claude, for example: "List my auto-wp sites and probe client1". Continue with [your first maintenance run](../../docs/usage/first-run.md):
 1. back up;
 2. verify;
 3. check updates;
